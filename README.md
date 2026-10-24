@@ -1,45 +1,42 @@
 # Skybin
 
-A small, dark-mode desktop client for AWS S3 and S3-compatible storage (MinIO, R2, Wasabi, Garage, …), built with Rust + egui.
+A fast, dark-mode desktop app for managing your S3 buckets. Works with AWS S3 and any S3-compatible storage: MinIO, Cloudflare R2, Wasabi, Garage, and more.
 
-- Saved connections (endpoint, region, keys, path-style)
-- Create and delete buckets (optionally emptying them first)
-- Browse folders with breadcrumbs, sort, filter, and multi-select (Ctrl/Shift)
-- Upload files or folders (button or drag & drop), download files or folders, rename/move, new folder, delete
-- Object metadata panel (content type, ETag, storage class, `x-amz-meta-*`, …)
+## Features
 
-Shortcuts: `Del` delete · `F2` rename · `F5` refresh · `Enter` open · `Backspace` up · `Ctrl+A` select all · `Esc` clear selection.
+- **Saved connections**: store as many accounts as you like (endpoint, region, keys, path-style) and switch between them in one click
+- **Buckets**: create and delete buckets, optionally emptying them first
+- **Browse**: navigate folders with breadcrumbs, then sort, filter and multi-select (Ctrl/Shift)
+- **Transfer**: upload files or whole folders with the button or drag & drop, and download files or folders
+- **Organize**: rename, move, create folders and delete objects
+- **Details**: see each object's content type, ETag, storage class and custom `x-amz-meta-*` metadata
 
-Credentials are saved **unencrypted** in eframe's app storage (`%APPDATA%\skybin` on Windows).
+## Keyboard shortcuts
 
-## Run
+| Key | Action |
+|---|---|
+| `Enter` | Open folder |
+| `Backspace` | Go up one folder |
+| `F2` | Rename |
+| `F5` | Refresh |
+| `Del` | Delete |
+| `Ctrl+A` | Select all |
+| `Esc` | Clear selection |
+
+## Install
+
+Install [Rust](https://rustup.rs), then run:
 
 ```sh
-cargo run --release
+cargo install --git https://github.com/realChriss/skybin
 ```
 
-## Test
+Then start it with `skybin`.
 
-```sh
-cargo test                       # backend unit tests + headless UI tests (egui_kittest), offline
-S3_TEST_ENDPOINT=http://127.0.0.1:9000 cargo test -- --ignored   # end-to-end against a real server
-```
+## Security note
 
-You can start a throwaway server for the end-to-end test with `docker run --rm -p 9000:9000 minio/minio server /data`.
+Your access keys are saved **unencrypted** on your computer (`%APPDATA%\skybin` on Windows). Only use Skybin on a machine you trust, and prefer keys with limited permissions.
 
-## Layout
+## License
 
-```
-src/
-  main.rs        entry point, loads saved connections
-  app.rs         state, async task/message loop, all actions
-  backend.rs     S3 operations (rust-s3), runs on tokio
-  tests.rs       headless UI tests driven via the accessibility tree
-  ui/
-    mod.rs       frame layout, shortcuts, drag & drop
-    sidebar.rs   connections + bucket list
-    browser.rs   toolbar, breadcrumbs, object table
-    dialogs.rs   modal dialogs
-    panels.rs    status bar, properties panel
-    theme.rs     dark theme
-```
+[Apache 2.0](LICENSE)

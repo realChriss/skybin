@@ -2,6 +2,7 @@
 name = "skybin"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0"
 
 [dependencies]
 eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "persistence"] }
