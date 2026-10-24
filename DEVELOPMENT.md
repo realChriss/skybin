@@ -16,3 +16,7 @@ S3_TEST_ENDPOINT=http://127.0.0.1:9000 cargo test -- --ignored   # end-to-end ag
 ```
 
 You can start a throwaway server for the end-to-end test with `docker run --rm -p 9000:9000 minio/minio server /data`.
+
+## Release
+
+Run `./release.sh` on `main`. It bumps the version in `Cargo.toml`, then tags and pushes, which builds and publishes the release.
