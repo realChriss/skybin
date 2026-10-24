@@ -35,13 +35,7 @@ Then start it with `skybin`.
 
 ## Security note
 
-Your access keys are encrypted before they are saved, so only your user account on this computer can read them:
-
-- **Windows**: Windows DPAPI (stored in `%APPDATA%\skybin`)
-- **macOS**: the encryption key lives in your Keychain
-- **Linux**: the encryption key lives in your Secret Service keyring (GNOME Keyring, KWallet, …). Without one, keys are saved unencrypted.
-
-Prefer access keys with limited permissions either way.
+Saved access keys are encrypted so only your user account can read them (DPAPI on Windows, Keychain on macOS, Secret Service on Linux). On Linux without a Secret Service keyring, they are saved unencrypted. Prefer keys with limited permissions.
 
 ## License
 
