@@ -30,4 +30,4 @@ windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Securit
 
 [target.'cfg(not(windows))'.dependencies]
 keyring = "4.2"
-chacha20poly1305 = "0.10"
+chacha20poly1305 = "0.11"
