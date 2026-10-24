@@ -75,7 +75,7 @@ fn crypt(data: &[u8], encrypt: bool) -> Option<Vec<u8>> {
 
 #[cfg(not(windows))]
 fn crypt(data: &[u8], encrypt: bool) -> Option<Vec<u8>> {
-    use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng};
+    use chacha20poly1305::aead::{Aead, Generate, Key, KeyInit};
     use chacha20poly1305::{XChaCha20Poly1305, XNonce};
     use std::sync::OnceLock;
 
@@ -86,7 +86,7 @@ fn crypt(data: &[u8], encrypt: bool) -> Option<Vec<u8>> {
             let key = match entry.get_secret() {
                 Ok(k) => k,
                 Err(keyring::Error::NoEntry) => {
-                    let k = XChaCha20Poly1305::generate_key(&mut OsRng).to_vec();
+                    let k = Key::<XChaCha20Poly1305>::generate().to_vec();
                     entry.set_secret(&k).ok()?;
                     k
                 }
@@ -100,13 +100,13 @@ fn crypt(data: &[u8], encrypt: bool) -> Option<Vec<u8>> {
         return None;
     }
     if encrypt {
-        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let nonce = XNonce::generate();
         let mut out = nonce.to_vec();
         out.extend(cipher.encrypt(&nonce, data).ok()?);
         Some(out)
     } else {
         let (nonce, ct) = data.split_at_checked(24)?;
-        cipher.decrypt(XNonce::from_slice(nonce), ct).ok()
+        cipher.decrypt(&XNonce::try_from(nonce).ok()?, ct).ok()
     }
 }
 
