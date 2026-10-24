@@ -35,8 +35,6 @@ Windows (PowerShell):
 irm https://raw.githubusercontent.com/realChriss/skybin/main/install.ps1 | iex
 ```
 
-Or download the binary for your platform from the [latest release](https://github.com/realChriss/skybin/releases/latest).
-
 Skybin checks for a new release when it starts and can update itself with one click.
 
 To uninstall, use **Settings > Apps > Installed apps** on Windows. On macOS, delete `~/Applications/Skybin.app`. On Linux, delete `~/.local/bin/skybin`, `~/.local/share/applications/skybin.desktop` and `~/.local/share/icons/hicolor/256x256/apps/skybin.png`.
