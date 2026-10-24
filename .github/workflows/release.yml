@@ -34,7 +34,7 @@ jobs:
           SKYBIN_VERSION: ${{ github.ref_name }}
       - run: mv target/release/${{ matrix.bin }} ${{ matrix.asset }}
         shell: bash
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
