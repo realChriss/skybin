@@ -318,6 +318,25 @@ pub async fn new_folder(b: &Bucket, key: String) -> Res<String> {
     Ok(format!("Created {key}"))
 }
 
+pub async fn fetch(b: &Bucket, key: &str) -> Res<Vec<u8>> {
+    Ok(b.get_object(key).await?.to_vec())
+}
+
+/// A one-hour signed link that tells the browser to play the file instead of downloading it.
+/// Media often has the wrong stored type (e.g. `text/plain` from other upload tools), so it's overridden.
+pub async fn browser_link(b: &Bucket, key: &str) -> Res<String> {
+    let queries = crate::media::kind(key).map(|_| {
+        HashMap::from([
+            ("response-content-type".to_string(), mime(key).to_string()),
+            (
+                "response-content-disposition".to_string(),
+                "inline".to_string(),
+            ),
+        ])
+    });
+    Ok(b.presign_get(key, 3600, queries).await?)
+}
+
 pub async fn properties(b: &Bucket, key: &str) -> Res<Vec<(String, String)>> {
     let (h, _) = b.head_object(key).await?;
     let mut out: Vec<(String, String)> = [
@@ -345,12 +364,14 @@ pub async fn properties(b: &Bucket, key: &str) -> Res<Vec<(String, String)>> {
     Ok(out)
 }
 
-fn mime(key: &str) -> &'static str {
-    let ext = key
-        .rsplit_once('.')
+pub fn ext(key: &str) -> String {
+    key.rsplit_once('.')
         .map(|(_, e)| e.to_ascii_lowercase())
-        .unwrap_or_default();
-    match ext.as_str() {
+        .unwrap_or_default()
+}
+
+fn mime(key: &str) -> &'static str {
+    match ext(key).as_str() {
         "html" | "htm" => "text/html",
         "css" => "text/css",
         "js" | "mjs" => "text/javascript",
@@ -362,12 +383,21 @@ fn mime(key: &str) -> &'static str {
         "jpg" | "jpeg" => "image/jpeg",
         "gif" => "image/gif",
         "webp" => "image/webp",
+        "bmp" => "image/bmp",
         "svg" => "image/svg+xml",
         "ico" => "image/x-icon",
         "pdf" => "application/pdf",
         "zip" => "application/zip",
-        "mp4" => "video/mp4",
+        "mp4" | "m4v" => "video/mp4",
+        "webm" => "video/webm",
+        "mov" => "video/quicktime",
+        "mkv" => "video/x-matroska",
+        "ogv" => "video/ogg",
         "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "wav" => "audio/wav",
+        "ogg" | "oga" => "audio/ogg",
+        "m4a" => "audio/mp4",
         "wasm" => "application/wasm",
         _ => "application/octet-stream",
     }
@@ -376,6 +406,23 @@ fn mime(key: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn browser_link_overrides_media_type() {
+        let p = Profile {
+            endpoint: "https://s3.example.com".into(),
+            access_key: "AKIA".into(),
+            secret_key: "secret".into(),
+            ..Default::default()
+        };
+        let b = p.bucket("b").unwrap();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let video = rt.block_on(browser_link(&b, "a/Clip.MP4")).unwrap();
+        assert!(video.contains("response-content-type=video%2Fmp4"));
+        assert!(video.contains("response-content-disposition=inline"));
+        let text = rt.block_on(browser_link(&b, "notes.txt")).unwrap();
+        assert!(!text.contains("response-content-type"));
+    }
 
     #[test]
     fn paths_and_encoding() {

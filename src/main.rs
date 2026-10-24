@@ -2,6 +2,7 @@
 
 mod app;
 mod backend;
+mod media;
 mod secret;
 #[cfg(test)]
 mod tests;

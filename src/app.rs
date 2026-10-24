@@ -1,4 +1,5 @@
 use crate::backend::{self, Entry, Profile};
+use crate::media::{self, Audio, Kind};
 use crate::update;
 use eframe::egui;
 use std::collections::HashSet;
@@ -16,6 +17,7 @@ pub(crate) enum Msg {
         result: Result<Vec<Entry>, String>,
     },
     Props(String, Props),
+    Preview(String, Result<Vec<u8>, String>),
     Progress(String),
     Done {
         result: Result<String, String>,
@@ -23,6 +25,10 @@ pub(crate) enum Msg {
     },
     UpdateAvailable(String),
     Updated(String, Result<(), String>),
+}
+
+pub(crate) fn image_uri(key: &str) -> String {
+    format!("bytes://{key}")
 }
 
 pub(crate) fn done(r: backend::Res<String>, buckets_changed: bool) -> Msg {
@@ -40,6 +46,14 @@ pub(crate) enum Dialog {
     NewFolder(String),
     Rename { from: Entry, to: String },
     Delete(Vec<Entry>),
+}
+
+pub(crate) enum Preview {
+    Loading,
+    Image(egui::load::Bytes),
+    Audio(Audio),
+    /// Why there's no inline preview; the panel still offers "Open in browser".
+    Note(String),
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -67,6 +81,7 @@ pub struct App {
     pub(crate) filter: String,
     pub(crate) sort: (Sort, bool),
     pub(crate) props: Option<(String, Props)>,
+    pub(crate) preview: Option<(String, Preview)>,
 
     pub(crate) dialog: Option<Dialog>,
     pub(crate) focus_dialog: bool,
@@ -97,6 +112,7 @@ impl App {
             filter: String::new(),
             sort: (Sort::Name, true),
             props: None,
+            preview: None,
             dialog: None,
             focus_dialog: false,
             busy: 0,
@@ -111,10 +127,18 @@ impl App {
         self.ctx = ctx.clone();
         if !self.started {
             self.started = true;
+            egui_extras::install_image_loaders(ctx);
             self.refresh_buckets();
             self.check_update();
         }
         self.poll();
+        // the preview lives only as long as its properties panel; dropping it stops audio
+        if self.preview.as_ref().map(|p| &p.0) != self.props.as_ref().map(|p| &p.0) {
+            if let Some((key, Preview::Image(_))) = self.preview.take() {
+                ctx.forget_image(&image_uri(&key));
+            }
+            self.preview = None;
+        }
     }
 
     fn check_update(&self) {
@@ -188,6 +212,18 @@ impl App {
                     }
                 }
                 Msg::Props(key, r) => self.props = Some((key, r)),
+                Msg::Preview(key, r) => {
+                    if self.preview.as_ref().map(|p| &p.0) == Some(&key) {
+                        let p = match r.and_then(|data| match media::kind(&key) {
+                            Some(Kind::Audio) => Audio::new(&key, data).map(Preview::Audio),
+                            _ => Ok(Preview::Image(data.into())),
+                        }) {
+                            Ok(p) => p,
+                            Err(e) => Preview::Note(format!("Can't preview this file: {e}")),
+                        };
+                        self.preview = Some((key, p));
+                    }
+                }
                 Msg::Progress(s) => self.status = Ok(s),
                 Msg::Done {
                     result,
@@ -288,12 +324,56 @@ impl App {
     pub(crate) fn show_props(&mut self, key: String) {
         let Some(b) = self.cur_bucket() else { return };
         self.props = Some((key.clone(), Ok(vec![])));
+        self.load_preview(key.clone());
         self.spawn(async move {
             let r = backend::properties(&b, &key)
                 .await
                 .map_err(|e| backend::nice_err(&*e));
             Msg::Props(key, r)
         });
+    }
+
+    fn load_preview(&mut self, key: String) {
+        let Some(kind) = media::kind(&key) else {
+            return;
+        };
+        let size = self
+            .entries
+            .iter()
+            .find(|e| e.key == key)
+            .map_or(0, |e| e.size);
+        let note = match kind {
+            Kind::Video => Some("Videos play in your browser.".to_string()),
+            _ if size > media::MAX_PREVIEW => Some(format!(
+                "Too large to preview here ({}).",
+                crate::ui::human(size)
+            )),
+            _ => None,
+        };
+        if let Some(note) = note {
+            self.preview = Some((key, Preview::Note(note)));
+            return;
+        }
+        let Some(b) = self.cur_bucket() else { return };
+        self.preview = Some((key.clone(), Preview::Loading));
+        self.spawn(async move {
+            let r = backend::fetch(&b, &key)
+                .await
+                .map_err(|e| backend::nice_err(&*e));
+            Msg::Preview(key, r)
+        });
+    }
+
+    pub(crate) fn open_in_browser(&mut self, key: &str) {
+        if let Some(url) = self.public_url(key) {
+            self.ctx.open_url(egui::OpenUrl::new_tab(url));
+            return;
+        }
+        let Some(b) = self.cur_bucket() else { return };
+        match self.rt.block_on(backend::browser_link(&b, key)) {
+            Ok(url) => self.ctx.open_url(egui::OpenUrl::new_tab(url)),
+            Err(e) => self.status = Err(backend::nice_err(&*e)),
+        }
     }
 
     /// 7 days is the S3 maximum. Signing is local, so blocking is fine.

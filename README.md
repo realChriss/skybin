@@ -18,6 +18,7 @@ A fast, dark-mode desktop app for managing your S3 buckets.
 - **Browse**: navigate folders with breadcrumbs, then sort, filter and multi-select (Ctrl/Shift)
 - **Transfer**: upload files or whole folders with the button or drag & drop, and download files or folders
 - **Organize**: rename, move, create folders and delete objects
+- **Preview**: view images and play audio right in the app, and stream videos in your browser
 - **Details**: see each object's content type, ETag, storage class and custom `x-amz-meta-*` metadata
 
 ## Install
