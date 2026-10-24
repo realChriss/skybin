@@ -1,8 +1,25 @@
 use super::{RED, human};
 use crate::app::App;
+use crate::update;
 use eframe::egui::{self, Align, Layout, RichText};
 
 impl App {
+    pub(crate) fn update_bar(&mut self, ui: &mut egui::Ui) {
+        let mut install = false;
+        ui.horizontal(|ui| {
+            if let Some(tag) = &self.new_version {
+                let current = update::VERSION.unwrap_or_default();
+                ui.label(format!("Skybin {tag} is available (you have {current})."));
+                install = ui.button("Update").clicked();
+            } else if let Some(line) = &self.update_line {
+                ui.label(line);
+            }
+        });
+        if install {
+            self.install_update();
+        }
+    }
+
     pub(crate) fn props_panel(&mut self, ui: &mut egui::Ui) {
         let Some((key, r)) = &self.props else { return };
         let mut close = false;

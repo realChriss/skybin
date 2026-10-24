@@ -23,9 +23,23 @@ Works with AWS S3 and any S3-compatible storage: MinIO, Cloudflare R2, Wasabi, G
 
 ## Install
 
-### Download
+Linux and macOS (Apple Silicon):
 
-Grab the binary for Windows, Linux or macOS (Apple Silicon) from the [latest release](https://github.com/realChriss/skybin/releases/latest). On Linux and macOS, make it executable with `chmod +x` first.
+```sh
+curl -fsSL https://raw.githubusercontent.com/realChriss/skybin/main/install.sh | sh
+```
+
+Windows (PowerShell):
+
+```powershell
+irm https://raw.githubusercontent.com/realChriss/skybin/main/install.ps1 | iex
+```
+
+Or download the binary for your platform from the [latest release](https://github.com/realChriss/skybin/releases/latest).
+
+Skybin checks for a new release when it starts and can update itself with one click.
+
+To uninstall, use **Settings > Apps > Installed apps** on Windows. On macOS, delete `~/Applications/Skybin.app`. On Linux, delete `~/.local/bin/skybin`, `~/.local/share/applications/skybin.desktop` and `~/.local/share/icons/hicolor/256x256/apps/skybin.png`.
 
 ### Build from source
 

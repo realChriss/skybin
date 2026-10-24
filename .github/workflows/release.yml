@@ -26,6 +26,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - run: cargo build --release --locked
+        env:
+          SKYBIN_VERSION: ${{ github.ref_name }}
       - run: mv target/release/${{ matrix.bin }} ${{ matrix.asset }}
         shell: bash
       - uses: actions/upload-artifact@v4

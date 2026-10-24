@@ -69,3 +69,8 @@ sizes = [16, 20, 24, 32, 40, 48, 64, 256]
 frames = [im.resize((s, s), Image.LANCZOS) for s in sizes]
 frames[-1].save(OUT / "icon.ico", sizes=[(s, s) for s in sizes], append_images=frames)
 frames[-1].save(OUT / "icon.png")
+
+# macOS icons leave a margin around the artwork (824 of 1024 px on Apple's grid)
+mac = Image.new("RGBA", (1024, 1024))
+mac.paste(im.resize((824, 824), Image.LANCZOS), (100, 100))
+mac.save(OUT / "icon.icns")

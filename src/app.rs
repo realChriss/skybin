@@ -1,4 +1,5 @@
 use crate::backend::{self, Entry, Profile};
+use crate::update;
 use eframe::egui;
 use std::collections::HashSet;
 use std::future::Future;
@@ -20,6 +21,8 @@ pub(crate) enum Msg {
         result: Result<String, String>,
         buckets_changed: bool,
     },
+    UpdateAvailable(String),
+    Updated(String, Result<(), String>),
 }
 
 pub(crate) fn done(r: backend::Res<String>, buckets_changed: bool) -> Msg {
@@ -70,6 +73,8 @@ pub struct App {
     pub(crate) busy: usize,
     pub(crate) loading: bool,
     pub(crate) status: Result<String, String>,
+    pub(crate) new_version: Option<String>,
+    pub(crate) update_line: Option<String>,
 }
 
 impl App {
@@ -97,6 +102,8 @@ impl App {
             busy: 0,
             loading: false,
             status: Ok("Ready".into()),
+            new_version: None,
+            update_line: None,
         }
     }
 
@@ -105,8 +112,30 @@ impl App {
         if !self.started {
             self.started = true;
             self.refresh_buckets();
+            self.check_update();
         }
         self.poll();
+    }
+
+    fn check_update(&self) {
+        let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+        self.rt.spawn(async move {
+            if let Some(tag) = update::check().await {
+                let _ = tx.send(Msg::UpdateAvailable(tag));
+                ctx.request_repaint();
+            }
+        });
+    }
+
+    pub(crate) fn install_update(&mut self) {
+        let Some(tag) = self.new_version.take() else {
+            return;
+        };
+        self.update_line = Some(format!("Downloading Skybin {tag}…"));
+        self.spawn(async move {
+            let r = update::install(&tag).await;
+            Msg::Updated(tag, r)
+        });
     }
 
     pub(crate) fn spawn(&mut self, f: impl Future<Output = Msg> + Send + 'static) {
@@ -128,7 +157,7 @@ impl App {
 
     pub(crate) fn poll(&mut self) {
         while let Ok(msg) = self.rx.try_recv() {
-            if !matches!(msg, Msg::Progress(_)) {
+            if !matches!(msg, Msg::Progress(_) | Msg::UpdateAvailable(_)) {
                 self.busy = self.busy.saturating_sub(1);
             }
             match msg {
@@ -171,6 +200,18 @@ impl App {
                         self.refresh();
                     }
                 }
+                Msg::UpdateAvailable(tag) => self.new_version = Some(tag),
+                Msg::Updated(tag, r) => match r {
+                    Ok(()) => {
+                        self.update_line =
+                            Some(format!("✓ Updated to {tag}. Restart Skybin to use it."))
+                    }
+                    Err(e) => {
+                        self.update_line = None;
+                        self.status = Err(format!("Update failed: {e}"));
+                        self.new_version = Some(tag);
+                    }
+                },
             }
         }
     }

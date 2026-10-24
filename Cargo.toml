@@ -8,9 +8,11 @@ license = "Apache-2.0"
 eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "persistence"] }
 egui = { version = "0.37.0", default-features = false, features = ["monochrome_emoji_fonts"] }
 egui_extras = "0.37.0"
+reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls"] }
 rfd = "0.17.2"
 rust-s3 = { version = "0.38.0", default-features = false, features = ["tokio-rustls-tls", "fail-on-err"] }
 serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "fs"] }
 
 [profile.release]

@@ -42,6 +42,11 @@ impl App {
         self.begin_frame(&ctx);
         self.shortcuts(&ctx);
 
+        if self.new_version.is_some() || self.update_line.is_some() {
+            egui::Panel::top("update")
+                .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(vec2(10.0, 6.0)))
+                .show(ui, |ui| self.update_bar(ui));
+        }
         egui::Panel::bottom("status")
             .frame(egui::Frame::side_top_panel(ui.style()).inner_margin(vec2(10.0, 4.0)))
             .show(ui, |ui| self.status_bar(ui));
