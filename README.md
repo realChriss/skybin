@@ -4,8 +4,7 @@
 
 # Skybin
 
-A fast, dark-mode desktop app for managing your S3 buckets.<br>
-Works with AWS S3 and any S3-compatible storage: MinIO, Cloudflare R2, Wasabi, Garage, and more.
+A fast, dark-mode desktop app for managing your S3 buckets.
 
 [![Release](https://img.shields.io/github/v/release/realChriss/skybin)](https://github.com/realChriss/skybin/releases/latest)
 [![CI](https://github.com/realChriss/skybin/actions/workflows/ci.yml/badge.svg)](https://github.com/realChriss/skybin/actions/workflows/ci.yml)
