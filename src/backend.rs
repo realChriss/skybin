@@ -14,7 +14,9 @@ pub struct Profile {
     /// Empty = AWS.
     pub endpoint: String,
     pub region: String,
+    #[serde(with = "crate::secret")]
     pub access_key: String,
+    #[serde(with = "crate::secret")]
     pub secret_key: String,
     pub path_style: bool,
     /// Bucket → public base URL (bucket website, CDN or custom domain).

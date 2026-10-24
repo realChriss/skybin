@@ -35,7 +35,7 @@ Then start it with `skybin`.
 
 ## Security note
 
-Your access keys are saved **unencrypted** on your computer (`%APPDATA%\skybin` on Windows). Only use Skybin on a machine you trust, and prefer keys with limited permissions.
+On Windows, your access keys are encrypted with Windows DPAPI, so only your Windows account on this computer can read them (stored in `%APPDATA%skybin`). On macOS and Linux they are currently saved **unencrypted**. Either way, prefer keys with limited permissions.
 
 ## License
 
