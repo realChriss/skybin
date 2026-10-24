@@ -40,3 +40,5 @@ Your access keys are saved **unencrypted** on your computer (`%APPDATA%\skybin` 
 ## License
 
 [Apache 2.0](LICENSE)
+
+Want to build or contribute? See [DEVELOPMENT.md](DEVELOPMENT.md).
