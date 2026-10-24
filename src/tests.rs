@@ -1,6 +1,3 @@
-//! Headless UI tests: the real `App` driven through egui_kittest via the accessibility tree.
-//! No test talks to a real S3: listings are seeded, and the profile points at a closed local port.
-
 use crate::app::{App, Dialog};
 use crate::backend::{Entry, Profile};
 use eframe::egui::{Key, Modifiers, accesskit::Role};
@@ -29,7 +26,6 @@ fn file(name: &str, size: u64, modified: &str) -> Entry {
     }
 }
 
-/// App already inside bucket "photos" with one folder and two files.
 fn browsing() -> App {
     let mut app = App::new(vec![offline()], Some(0));
     app.started = true; // skip the initial bucket fetch

@@ -1,5 +1,3 @@
-//! Modal dialogs: connections, buckets, folders, rename and delete confirmation.
-
 use super::{ACCENT, RED};
 use crate::app::{App, Dialog};
 use eframe::egui::{self, Color32, Id, Key, RichText};

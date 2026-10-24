@@ -1,5 +1,3 @@
-//! S3 operations (rust-s3). Everything here runs on the tokio runtime, never on the UI thread.
-
 use s3::creds::Credentials;
 use s3::serde_types::ObjectIdentifier;
 use s3::{Bucket, BucketConfiguration, Region};
@@ -49,7 +47,6 @@ impl Profile {
         )?)
     }
 
-    /// Permanent link through the bucket's public domain, if one is set.
     pub fn public_url(&self, bucket: &str, key: &str) -> Option<String> {
         let base = self.public_urls.get(bucket)?.trim().trim_end_matches('/');
         let scheme = if base.contains("://") { "" } else { "https://" };
@@ -77,7 +74,6 @@ pub struct Entry {
     pub is_dir: bool,
 }
 
-/// Turns an S3 XML error body into its `<Message>`, which is what a human wants to read.
 pub fn nice_err(e: &(dyn std::error::Error + Send + Sync)) -> String {
     let s = e.to_string();
     match (s.find("<Message>"), s.find("</Message>")) {
@@ -118,7 +114,6 @@ pub async fn delete_bucket(b: &Bucket, empty_first: bool, report: Report<'_>) ->
     Ok(format!("Deleted bucket {}", b.name()))
 }
 
-/// One level of a "directory": common prefixes become folders.
 pub async fn list_dir(b: &Bucket, prefix: &str) -> Res<Vec<Entry>> {
     let mut out = Vec::new();
     for page in b.list(prefix.to_string(), Some("/".to_string())).await? {
@@ -148,7 +143,6 @@ pub async fn list_dir(b: &Bucket, prefix: &str) -> Res<Vec<Entry>> {
     Ok(out)
 }
 
-/// Every key under `prefix`, recursively (folder placeholders included).
 async fn list_all(b: &Bucket, prefix: &str) -> Res<Vec<String>> {
     Ok(b.list(prefix.to_string(), None)
         .await?
@@ -158,7 +152,6 @@ async fn list_all(b: &Bucket, prefix: &str) -> Res<Vec<String>> {
         .collect())
 }
 
-/// Files stay as-is, folders expand to everything below them.
 async fn expand(b: &Bucket, entries: &[Entry]) -> Res<Vec<String>> {
     let mut keys = Vec::new();
     for e in entries {
@@ -241,14 +234,12 @@ pub async fn upload(
     Ok(format!("Uploaded {n} file(s)"))
 }
 
-/// Maps a key to a safe relative local path, or None for anything that could escape the target dir.
 fn safe_rel(rel: &str) -> Option<PathBuf> {
     let parts: Vec<&str> = rel.split('/').filter(|s| !s.is_empty()).collect();
     let bad = |s: &&str| *s == "." || *s == ".." || s.contains([':', '\\']);
     (!parts.is_empty() && !parts.iter().any(bad)).then(|| parts.iter().collect())
 }
 
-/// Pairs every file under `entries` with a destination under `dir`, keeping folder structure.
 pub async fn plan_download(
     b: &Bucket,
     entries: &[Entry],
@@ -273,7 +264,7 @@ pub async fn download(b: &Bucket, jobs: Vec<(String, PathBuf)>, report: Report<'
         let mut f = tokio::fs::File::create(path).await?;
         if let Err(e) = b.get_object_to_writer(key, &mut f).await {
             drop(f);
-            let _ = tokio::fs::remove_file(path).await; // don't leave a truncated file behind
+            let _ = tokio::fs::remove_file(path).await;
             return Err(e.into());
         }
     }
@@ -292,7 +283,6 @@ fn encode(key: &str) -> String {
         .collect()
 }
 
-/// Rename/move a file or a whole folder. Originals are only deleted after every copy succeeded.
 // ponytail: single CopyObject per key, so objects > 5 GB fail; add multipart copy if that matters.
 pub async fn rename(b: &Bucket, from: Entry, to: String, report: Report<'_>) -> Res<String> {
     let pairs: Vec<(String, String)> = if from.is_dir {

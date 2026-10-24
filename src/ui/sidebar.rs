@@ -1,5 +1,3 @@
-//! Left panel: connection picker and bucket list.
-
 use crate::app::{App, Dialog};
 use crate::backend::Profile;
 use eframe::egui::{self, Align, Layout, RichText};

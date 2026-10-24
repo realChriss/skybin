@@ -1,5 +1,3 @@
-//! Application state, the async message loop and every user action.
-
 use crate::backend::{self, Entry, Profile};
 use eframe::egui;
 use std::collections::HashSet;
@@ -7,7 +5,6 @@ use std::future::Future;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-/// Object metadata rows, or the error that prevented loading them.
 pub(crate) type Props = Result<Vec<(String, String)>, String>;
 
 pub(crate) enum Msg {
@@ -103,7 +100,6 @@ impl App {
         }
     }
 
-    /// Called at the start of every frame: binds the egui context and drains finished tasks.
     pub(crate) fn begin_frame(&mut self, ctx: &egui::Context) {
         self.ctx = ctx.clone();
         if !self.started {
@@ -113,7 +109,6 @@ impl App {
         self.poll();
     }
 
-    // ---------- async plumbing ----------
     pub(crate) fn spawn(&mut self, f: impl Future<Output = Msg> + Send + 'static) {
         self.busy += 1;
         let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
@@ -150,7 +145,7 @@ impl App {
                     result,
                 } => {
                     if self.bucket.as_ref() != Some(&bucket) || self.prefix != prefix {
-                        continue; // user navigated away meanwhile
+                        continue;
                     }
                     self.loading = false;
                     match result {
@@ -190,7 +185,6 @@ impl App {
             .ok()
     }
 
-    // ---------- actions ----------
     pub(crate) fn refresh_buckets(&mut self) {
         let Some(p) = self.cur_profile() else { return };
         self.status = Ok("Loading buckets…".into());
@@ -221,7 +215,7 @@ impl App {
 
     pub(crate) fn navigate(&mut self, bucket: Option<String>, prefix: String) {
         if self.bucket == bucket && self.prefix == prefix {
-            return; // already here; F5 / ⟳ is for reloading
+            return;
         }
         self.bucket = bucket;
         self.prefix = prefix;
@@ -261,7 +255,7 @@ impl App {
         });
     }
 
-    /// Presigned GET link, valid 7 days (the S3 maximum). Signing is local, so blocking is fine.
+    /// 7 days is the S3 maximum. Signing is local, so blocking is fine.
     pub(crate) fn copy_url(&mut self, key: &str) {
         let Some(b) = self.cur_bucket() else { return };
         match self.rt.block_on(b.presign_get(key, 7 * 24 * 3600, None)) {
@@ -298,7 +292,6 @@ impl App {
         let sel = self.selection();
         let Some(b) = self.cur_bucket() else { return };
         let report = self.reporter();
-        // Single file: native save dialog (asks before overwriting). Otherwise: pick a folder.
         if let [e] = &sel[..]
             && !e.is_dir
         {

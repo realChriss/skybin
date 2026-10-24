@@ -1,5 +1,3 @@
-//! Central panel: breadcrumbs, action toolbar and the object table.
-
 use super::{RED, human};
 use crate::app::{App, Dialog, Sort};
 use crate::backend::Entry;
@@ -24,7 +22,6 @@ impl App {
                 self.refresh();
             }
             ui.separator();
-            // Breadcrumbs
             let mut nav = None;
             if ui
                 .add(egui::Button::new(RichText::new(&bucket).strong()).frame(false))
@@ -267,7 +264,6 @@ impl App {
             Some(("delete", _)) => self.ask_delete(),
             _ => {}
         }
-        // Ctrl+A needs the current filtered view.
         if self.dialog.is_none()
             && !ui.ctx().egui_wants_keyboard_input()
             && ui.input(|i| i.modifiers.command && i.key_pressed(Key::A))

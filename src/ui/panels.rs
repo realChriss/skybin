@@ -1,5 +1,3 @@
-//! Status bar and the properties (metadata) side panel.
-
 use super::{RED, human};
 use crate::app::App;
 use eframe::egui::{self, Align, Layout, RichText};

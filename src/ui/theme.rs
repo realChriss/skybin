@@ -1,5 +1,3 @@
-//! Dark theme tweaks on top of egui's defaults.
-
 use super::ACCENT;
 use eframe::egui::{self, Color32, Theme, vec2};
 

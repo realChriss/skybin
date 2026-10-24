@@ -1,5 +1,3 @@
-//! All drawing code. Each file adds an `impl App` block for its area of the window.
-
 mod browser;
 mod dialogs;
 mod panels;
@@ -38,7 +36,7 @@ impl eframe::App for App {
 }
 
 impl App {
-    /// One full frame. Separate from `eframe::App::ui` so headless tests can drive it without a `Frame`.
+    /// Separate from `eframe::App::ui` so headless tests can drive it without a `Frame`.
     pub(crate) fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.begin_frame(&ctx);
