@@ -1,6 +1,9 @@
 use serde::{Deserialize, Deserializer, Serializer};
 
+#[cfg(windows)]
 const PREFIX: &str = "dpapi:";
+#[cfg(not(windows))]
+const PREFIX: &str = "keyring:";
 
 pub fn serialize<S: Serializer>(v: &str, s: S) -> Result<S::Ok, S::Error> {
     s.serialize_str(&seal(v))
@@ -10,8 +13,14 @@ pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> 
     Ok(reveal(String::deserialize(d)?))
 }
 
+/// Values that failed to decrypt on load (locked keyring, another user's file) still carry the
+/// prefix and are written back untouched, so a bad start never wipes the stored keys.
+/// Without a working keyring/DPAPI the value is stored as plaintext.
 fn seal(v: &str) -> String {
-    match dpapi(v.as_bytes(), true) {
+    if v.starts_with(PREFIX) {
+        return v.to_string();
+    }
+    match crypt(v.as_bytes(), true) {
         Some(enc) => format!(
             "{PREFIX}{}",
             enc.iter().map(|b| format!("{b:02x}")).collect::<String>()
@@ -20,23 +29,21 @@ fn seal(v: &str) -> String {
     }
 }
 
-/// Unprefixed values are plaintext from before encryption. A value that fails to decrypt
-/// (other Windows user or machine) becomes empty: failing here would drop every saved profile.
 fn reveal(v: String) -> String {
-    let Some(hex) = v.strip_prefix(PREFIX) else {
-        return v;
-    };
-    (0..hex.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
-        .collect::<Option<Vec<u8>>>()
-        .and_then(|enc| dpapi(&enc, false))
+    v.strip_prefix(PREFIX)
+        .and_then(|hex| {
+            (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok())
+                .collect::<Option<Vec<u8>>>()
+        })
+        .and_then(|enc| crypt(&enc, false))
         .and_then(|dec| String::from_utf8(dec).ok())
-        .unwrap_or_default()
+        .unwrap_or(v)
 }
 
 #[cfg(windows)]
-fn dpapi(data: &[u8], protect: bool) -> Option<Vec<u8>> {
+fn crypt(data: &[u8], encrypt: bool) -> Option<Vec<u8>> {
     use std::ptr::{null, null_mut};
     use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Cryptography::*;
@@ -54,7 +61,7 @@ fn dpapi(data: &[u8], protect: bool) -> Option<Vec<u8>> {
     };
     let flags = CRYPTPROTECT_UI_FORBIDDEN;
     let ok = unsafe {
-        if protect {
+        if encrypt {
             CryptProtectData(&input, null(), null(), null(), null(), flags, &mut out)
         } else {
             CryptUnprotectData(&input, null_mut(), null(), null(), null(), flags, &mut out)
@@ -68,10 +75,43 @@ fn dpapi(data: &[u8], protect: bool) -> Option<Vec<u8>> {
     Some(v)
 }
 
-// ponytail: plaintext outside Windows; add libsecret/Keychain if other platforms need it.
+/// A random master key lives in the macOS Keychain / Linux Secret Service; values are
+/// XChaCha20-Poly1305 encrypted with it as `nonce || ciphertext`.
 #[cfg(not(windows))]
-fn dpapi(_: &[u8], _: bool) -> Option<Vec<u8>> {
-    None
+fn crypt(data: &[u8], encrypt: bool) -> Option<Vec<u8>> {
+    use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng};
+    use chacha20poly1305::{XChaCha20Poly1305, XNonce};
+    use std::sync::OnceLock;
+
+    static CIPHER: OnceLock<Option<XChaCha20Poly1305>> = OnceLock::new();
+    let cipher = CIPHER
+        .get_or_init(|| {
+            let entry = keyring::Entry::new("skybin", "master-key").ok()?;
+            let key = match entry.get_secret() {
+                Ok(k) => k,
+                Err(keyring::Error::NoEntry) => {
+                    let k = XChaCha20Poly1305::generate_key(&mut OsRng).to_vec();
+                    entry.set_secret(&k).ok()?;
+                    k
+                }
+                Err(_) => return None,
+            };
+            XChaCha20Poly1305::new_from_slice(&key).ok()
+        })
+        .as_ref()?;
+
+    if data.is_empty() {
+        return None;
+    }
+    if encrypt {
+        let nonce = XChaCha20Poly1305::generate_nonce(&mut OsRng);
+        let mut out = nonce.to_vec();
+        out.extend(cipher.encrypt(&nonce, data).ok()?);
+        Some(out)
+    } else {
+        let (nonce, ct) = data.split_at_checked(24)?;
+        cipher.decrypt(XNonce::from_slice(nonce), ct).ok()
+    }
 }
 
 #[cfg(test)]
@@ -83,12 +123,15 @@ mod tests {
         assert_eq!(reveal("plain".into()), "plain");
         assert_eq!(reveal(seal("")), "");
         assert_eq!(reveal(seal("AKIA/sëcret+")), "AKIA/sëcret+");
-        assert_eq!(reveal(format!("{PREFIX}zz")), "");
-        #[cfg(windows)]
-        {
-            let s = seal("AKIA");
-            assert!(s.starts_with(PREFIX) && !s.contains("AKIA"));
-            assert_eq!(reveal(format!("{PREFIX}00ff")), "");
-        }
+        let bad = format!("{PREFIX}00ff");
+        assert_eq!(reveal(bad.clone()), bad);
+        assert_eq!(seal(&bad), bad);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn dpapi_hides_value() {
+        let s = seal("AKIA");
+        assert!(s.starts_with(PREFIX) && !s.contains("AKIA"));
     }
 }
