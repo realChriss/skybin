@@ -13,9 +13,7 @@ pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> 
     Ok(reveal(String::deserialize(d)?))
 }
 
-/// Values that failed to decrypt on load (locked keyring, another user's file) still carry the
-/// prefix and are written back untouched, so a bad start never wipes the stored keys.
-/// Without a working keyring/DPAPI the value is stored as plaintext.
+/// Prefixed values failed to decrypt on load; writing them back untouched keeps a locked keyring from wiping them.
 fn seal(v: &str) -> String {
     if v.starts_with(PREFIX) {
         return v.to_string();
@@ -75,8 +73,6 @@ fn crypt(data: &[u8], encrypt: bool) -> Option<Vec<u8>> {
     Some(v)
 }
 
-/// A random master key lives in the macOS Keychain / Linux Secret Service; values are
-/// XChaCha20-Poly1305 encrypted with it as `nonce || ciphertext`.
 #[cfg(not(windows))]
 fn crypt(data: &[u8], encrypt: bool) -> Option<Vec<u8>> {
     use chacha20poly1305::aead::{Aead, AeadCore, KeyInit, OsRng};
