@@ -17,7 +17,9 @@ tokio = { version = "1.54.1", features = ["rt-multi-thread", "fs"] }
 
 [profile.release]
 strip = true
-lto = "thin"
+lto = true
+codegen-units = 1
+opt-level = "s"
 
 [build-dependencies]
 winresource = "0.1.31"
