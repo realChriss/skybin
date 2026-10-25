@@ -1,6 +1,6 @@
 use super::{RED, human};
 use crate::app::{App, Preview, image_uri};
-use crate::media::{self, Audio, Kind};
+use crate::media::Playback;
 use crate::update;
 use eframe::egui::{self, Align, Layout, RichText, vec2};
 use std::time::Duration;
@@ -10,29 +10,37 @@ fn clock(d: Duration) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-fn audio_controls(ui: &mut egui::Ui, audio: &Audio) {
+fn controls(ui: &mut egui::Ui, media: &mut dyn Playback) {
     ui.horizontal(|ui| {
-        if ui.button(if audio.playing() { "⏸" } else { "▶" }).clicked() {
-            audio.toggle();
+        if ui.button(if media.playing() { "⏸" } else { "▶" }).clicked() {
+            media.toggle();
         }
-        let pos = audio.pos();
-        let total = audio.total.map_or_else(|| "-:--".to_string(), clock);
-        ui.spacing_mut().slider_width = (ui.available_width() - 90.0).max(40.0);
-        let mut t = pos.as_secs_f32();
-        let end = audio.total.map_or(t, |d| d.as_secs_f32()).max(0.1);
-        if ui
-            .add(egui::Slider::new(&mut t, 0.0..=end).show_value(false))
-            .changed()
-        {
-            audio.seek(Duration::from_secs_f32(t));
-        }
-        ui.label(
-            RichText::new(format!("{} / {total}", clock(pos)))
-                .monospace()
-                .small(),
-        );
+        let total = media.total().map_or_else(|| "-:--".to_string(), clock);
+        // Seeking on every frame of a held drag replays the same few milliseconds of sound,
+        // so the drag target is kept aside and only applied on release.
+        let id = ui.make_persistent_id("scrub");
+        let scrub = ui.data(|d| d.get_temp::<f32>(id));
+        let mut t = scrub.unwrap_or(media.pos().as_secs_f32());
+        let end = media.total().map_or(t, |d| d.as_secs_f32()).max(0.1);
+        // Right-to-left so the time takes its size first and the bar fills the rest;
+        // a guessed bar width overflows the resizable panel and widens it every frame.
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            ui.label(
+                RichText::new(format!("{} / {total}", clock(Duration::from_secs_f32(t))))
+                    .monospace()
+                    .small(),
+            );
+            ui.spacing_mut().slider_width = ui.available_width();
+            let slider = ui.add(egui::Slider::new(&mut t, 0.0..=end).show_value(false));
+            if slider.is_pointer_button_down_on() {
+                ui.data_mut(|d| d.insert_temp(id, t));
+            } else if scrub.is_some() || slider.changed() {
+                ui.data_mut(|d| d.remove::<f32>(id));
+                media.seek(Duration::from_secs_f32(t));
+            }
+        });
     });
-    if audio.playing() {
+    if media.playing() {
         ui.ctx().request_repaint_after(Duration::from_millis(200));
     }
 }
@@ -57,14 +65,18 @@ impl App {
     pub(crate) fn props_panel(&mut self, ui: &mut egui::Ui) {
         let Some((key, _)) = &self.props else { return };
         let key = key.clone();
-        let mut close = false;
+        let (mut close, mut open) = (false, false);
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.strong("Properties");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                close = ui.button("✖").clicked()
+                close = ui.button("✖").clicked();
+                open = ui.button("↗").on_hover_text("Open in browser").clicked();
             });
         });
+        if open {
+            self.open_in_browser(&key);
+        }
         ui.separator();
         ui.add(egui::Label::new(RichText::new(&key).monospace()).wrap());
         if ui.small_button("📋 Copy key").clicked() {
@@ -100,30 +112,30 @@ impl App {
     }
 
     fn preview_ui(&mut self, ui: &mut egui::Ui, key: &str) {
-        let Some((_, preview)) = &self.preview else {
+        let Some((_, preview)) = &mut self.preview else {
             return;
         };
         ui.add_space(8.0);
+        let size = vec2(ui.available_width(), 320.0);
         match preview {
             Preview::Loading => {
                 ui.spinner();
             }
             Preview::Image(bytes) => {
-                let size = vec2(ui.available_width(), 320.0);
                 ui.add(egui::Image::from_bytes(image_uri(key), bytes.clone()).max_size(size));
             }
-            Preview::Audio(audio) => audio_controls(ui, audio),
-            Preview::Note(note) => {
-                ui.label(RichText::new(note).weak());
+            Preview::Audio(audio) => controls(ui, audio),
+            Preview::Video(video) => {
+                video.update();
+                match video.texture() {
+                    Some(t) => ui.add(egui::Image::new(t).max_size(size)),
+                    None => ui.spinner(),
+                };
+                controls(ui, video);
             }
-        }
-        let open = if media::kind(key) == Some(Kind::Video) {
-            ui.button("▶ Play in browser").clicked()
-        } else {
-            ui.small_button("↗ Open in browser").clicked()
-        };
-        if open {
-            self.open_in_browser(key);
+            Preview::Note(note) => {
+                ui.label(RichText::new(note.as_str()).weak());
+            }
         }
     }
 
@@ -154,5 +166,77 @@ impl App {
                 }
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use egui::accesskit::Role;
+    use egui::{Event, PointerButton};
+    use egui_kittest::Harness;
+    use egui_kittest::kittest::Queryable;
+
+    /// Always playing, so the position moves on every frame like real playback.
+    #[derive(Default)]
+    struct Playing {
+        pos: Duration,
+        seeks: Vec<Duration>,
+    }
+
+    impl Playback for Playing {
+        fn playing(&self) -> bool {
+            true
+        }
+        fn pos(&self) -> Duration {
+            self.pos
+        }
+        fn total(&self) -> Option<Duration> {
+            Some(Duration::from_secs(100))
+        }
+        fn toggle(&mut self) {}
+        fn seek(&mut self, to: Duration) {
+            self.seeks.push(to);
+            self.pos = to;
+        }
+    }
+
+    #[test]
+    fn holding_the_seek_bar_seeks_once_on_release() {
+        let mut h = Harness::builder()
+            .with_size([320.0, 60.0])
+            .with_accessibility_check(false)
+            .build_ui_state(
+                |ui, p: &mut Playing| {
+                    p.pos += Duration::from_millis(16);
+                    controls(ui, p);
+                },
+                Playing::default(),
+            );
+        h.step();
+        // the whole row fits the panel instead of pushing it wider
+        let time = h.get_by(|n| {
+            n.role() == Role::Label && n.value().is_some_and(|v| v.ends_with("/ 1:40"))
+        });
+        assert!(time.rect().right() <= 320.0);
+        let at = h.get_by_role(Role::Slider).rect().center();
+        let button = |pressed| Event::PointerButton {
+            pos: at,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: Default::default(),
+        };
+        h.event(Event::PointerMoved(at));
+        h.event(button(true));
+        for _ in 0..10 {
+            h.step();
+        }
+        assert!(h.state().seeks.is_empty());
+        h.event(button(false));
+        h.step();
+        h.step();
+        let seeks = &h.state().seeks;
+        assert_eq!(seeks.len(), 1);
+        assert!((seeks[0].as_secs_f32() - 50.0).abs() < 10.0, "{seeks:?}");
     }
 }

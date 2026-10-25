@@ -322,8 +322,8 @@ pub async fn fetch(b: &Bucket, key: &str) -> Res<Vec<u8>> {
     Ok(b.get_object(key).await?.to_vec())
 }
 
-/// A one-hour signed link that tells the browser to play the file instead of downloading it.
-/// Media often has the wrong stored type (e.g. `text/plain` from other upload tools), so it's overridden.
+/// Media types are overridden because stored ones are often wrong (e.g. `text/plain` from other
+/// upload tools), which makes browsers show or download the file instead of playing it.
 pub async fn browser_link(b: &Bucket, key: &str) -> Res<String> {
     let queries = crate::media::kind(key).map(|_| {
         HashMap::from([

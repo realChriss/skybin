@@ -5,9 +5,13 @@ edition = "2024"
 license = "Apache-2.0"
 
 [dependencies]
-eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "clipboard", "default_fonts", "glow", "links", "persistence"] }
+eframe = { version = "0.37.0", default-features = false, features = ["clipboard", "default_fonts", "glow", "links", "persistence", "wayland", "x11"] }
 egui = { version = "0.37.0", default-features = false, features = ["monochrome_emoji_fonts"] }
 egui_extras = { version = "0.37.0", default-features = false, features = ["image", "gif", "webp"] }
+# pure-Rust video decoding; the codec hub isn't on crates.io, and a version tag lets Dependabot bump it
+filmcraft-codecs = { git = "https://github.com/storytold/filmcraft", tag = "v0.12.0" }
+filmcraft-media = { git = "https://github.com/storytold/filmcraft", tag = "v0.12.0" }
+filmcraft-time = { git = "https://github.com/storytold/filmcraft", tag = "v0.12.0" }
 image = { version = "0.25.10", default-features = false, features = ["bmp", "jpeg", "png"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls"] }
 rfd = "0.17.2"

@@ -1,5 +1,5 @@
 use crate::backend::{self, Entry, Profile};
-use crate::media::{self, Audio, Kind};
+use crate::media::{self, Audio, Kind, Video};
 use crate::update;
 use eframe::egui;
 use std::collections::HashSet;
@@ -17,7 +17,7 @@ pub(crate) enum Msg {
         result: Result<Vec<Entry>, String>,
     },
     Props(String, Props),
-    Preview(String, Result<Vec<u8>, String>),
+    Preview(String, Result<Fetched, String>),
     Progress(String),
     Done {
         result: Result<String, String>,
@@ -25,6 +25,11 @@ pub(crate) enum Msg {
     },
     UpdateAvailable(String),
     Updated(String, Result<(), String>),
+}
+
+pub(crate) enum Fetched {
+    Bytes(Vec<u8>),
+    Video(filmcraft_media::SharedSource),
 }
 
 pub(crate) fn image_uri(key: &str) -> String {
@@ -52,7 +57,7 @@ pub(crate) enum Preview {
     Loading,
     Image(egui::load::Bytes),
     Audio(Audio),
-    /// Why there's no inline preview; the panel still offers "Open in browser".
+    Video(Video),
     Note(String),
 }
 
@@ -214,9 +219,14 @@ impl App {
                 Msg::Props(key, r) => self.props = Some((key, r)),
                 Msg::Preview(key, r) => {
                     if self.preview.as_ref().map(|p| &p.0) == Some(&key) {
-                        let p = match r.and_then(|data| match media::kind(&key) {
-                            Some(Kind::Audio) => Audio::new(&key, data).map(Preview::Audio),
-                            _ => Ok(Preview::Image(data.into())),
+                        let p = match r.and_then(|f| match f {
+                            Fetched::Video(source) => {
+                                Video::new(source, &self.ctx).map(Preview::Video)
+                            }
+                            Fetched::Bytes(data) => match media::kind(&key) {
+                                Some(Kind::Audio) => Audio::new(&key, data).map(Preview::Audio),
+                                _ => Ok(Preview::Image(data.into())),
+                            },
                         }) {
                             Ok(p) => p,
                             Err(e) => Preview::Note(format!("Can't preview this file: {e}")),
@@ -334,32 +344,33 @@ impl App {
     }
 
     fn load_preview(&mut self, key: String) {
-        let Some(kind) = media::kind(&key) else {
+        if media::kind(&key).is_none() {
             return;
-        };
+        }
         let size = self
             .entries
             .iter()
             .find(|e| e.key == key)
             .map_or(0, |e| e.size);
-        let note = match kind {
-            Kind::Video => Some("Videos play in your browser.".to_string()),
-            _ if size > media::MAX_PREVIEW => Some(format!(
-                "Too large to preview here ({}).",
-                crate::ui::human(size)
-            )),
-            _ => None,
-        };
-        if let Some(note) = note {
+        if size > media::MAX_PREVIEW {
+            let note = format!("Too large to preview here ({}).", crate::ui::human(size));
             self.preview = Some((key, Preview::Note(note)));
             return;
         }
         let Some(b) = self.cur_bucket() else { return };
         self.preview = Some((key.clone(), Preview::Loading));
+        let video = media::kind(&key) == Some(Kind::Video);
         self.spawn(async move {
             let r = backend::fetch(&b, &key)
                 .await
-                .map_err(|e| backend::nice_err(&*e));
+                .map_err(|e| backend::nice_err(&*e))
+                .and_then(|data| {
+                    if video {
+                        media::open_video(&key, data).map(Fetched::Video)
+                    } else {
+                        Ok(Fetched::Bytes(data))
+                    }
+                });
             Msg::Preview(key, r)
         });
     }

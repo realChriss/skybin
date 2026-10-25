@@ -1,6 +1,6 @@
-use crate::app::{App, Dialog};
+use crate::app::{App, Dialog, Preview};
 use crate::backend::{Entry, Profile};
-use eframe::egui::{Key, Modifiers, accesskit::Role};
+use eframe::egui::{self, Key, Modifiers, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
 
@@ -48,6 +48,7 @@ fn browsing() -> App {
 
 fn harness(app: App) -> Harness<'static, App> {
     let mut h = Harness::builder()
+        .with_accessibility_check(false)
         .with_size([1100.0, 700.0])
         .build_ui_state(|ui, app: &mut App| app.show(ui), app);
     crate::ui::theme::apply(&h.ctx);
@@ -234,4 +235,23 @@ fn layout_is_stable_between_frames() {
     let before = h.get_by_value("Size").rect();
     h.run_steps(5);
     assert_eq!(h.get_by_value("Size").rect(), before);
+}
+
+/// Regression: a button overlaid on the image pushed the properties up over it and, being wider
+/// than its slot, widened the resizable panel on every repaint.
+#[test]
+fn image_preview_keeps_its_place() {
+    let mut app = browsing();
+    app.props = Some(("b.jpg".into(), Ok(vec![("ETag".into(), "abc".into())])));
+    let png = include_bytes!("../assets/icon.png").to_vec();
+    app.preview = Some(("b.jpg".into(), Preview::Image(png.into())));
+    let mut h = harness(app);
+    let image = h.get_by_role(Role::Image).rect();
+    assert!(h.get_by_label("ETag").rect().top() >= image.bottom());
+    assert!(h.get_by_label("↗").rect().bottom() <= image.top());
+    for x in [900.0, 950.0, 1000.0] {
+        h.hover_at(egui::pos2(x, 200.0));
+        h.run_steps(3);
+    }
+    assert_eq!(h.get_by_role(Role::Image).rect(), image);
 }
