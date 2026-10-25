@@ -75,6 +75,11 @@ fn empty_state_add_connection() {
     );
     h.get_by_role_and_label(Role::TextInput, "Name")
         .type_text("Local");
+    h.run();
+    assert!(
+        h.get_by_label("Save").accesskit_node().is_disabled(),
+        "save needs an endpoint"
+    );
     let endpoint = h.get_by_role_and_label(Role::TextInput, "Endpoint");
     endpoint.focus();
     endpoint.type_text("http://127.0.0.1:9");
@@ -254,4 +259,32 @@ fn image_preview_keeps_its_place() {
         h.run_steps(3);
     }
     assert_eq!(h.get_by_role(Role::Image).rect(), image);
+}
+
+#[test]
+fn shift_click_ranges_from_the_same_file_after_sorting() {
+    let mut h = harness(browsing());
+    h.get_by_label("📄  a.txt").click();
+    h.run();
+    h.get_by_value("Size").click();
+    h.run();
+    h.get_by_value("Size ⏶").click();
+    h.run();
+    assert_eq!(names(&h), ["2024", "b.jpg", "a.txt"]);
+    h.get_by_label("📄  b.jpg")
+        .click_modifiers(Modifiers::SHIFT);
+    h.run();
+    assert_eq!(h.state().selected.len(), 2);
+}
+
+#[test]
+fn deleting_the_open_bucket_closes_it() {
+    let mut app = browsing();
+    app.prefix = "2024/".into();
+    app.props = Some(("2024/a.txt".into(), Ok(vec![])));
+    app.submit(Dialog::DeleteBucket {
+        name: "photos".into(),
+        empty_first: false,
+    });
+    assert!(app.bucket.is_none() && app.prefix.is_empty() && app.props.is_none());
 }

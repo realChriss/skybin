@@ -38,7 +38,7 @@ pub(crate) fn image_uri(key: &str) -> String {
 
 pub(crate) fn done(r: backend::Res<String>, buckets_changed: bool) -> Msg {
     Msg::Done {
-        result: r.map_err(|e| backend::nice_err(&*e)),
+        result: backend::nice(r),
         buckets_changed,
     }
 }
@@ -82,7 +82,8 @@ pub struct App {
     pub(crate) prefix: String,
     pub(crate) entries: Vec<Entry>,
     pub(crate) selected: HashSet<String>,
-    pub(crate) anchor: Option<usize>,
+    /// Key of the row a shift-click selects from.
+    pub(crate) anchor: Option<String>,
     pub(crate) filter: String,
     pub(crate) sort: (Sort, bool),
     pub(crate) props: Option<(String, Props)>,
@@ -137,12 +138,12 @@ impl App {
             self.check_update();
         }
         self.poll();
-        // the preview lives only as long as its properties panel; dropping it stops audio
-        if self.preview.as_ref().map(|p| &p.0) != self.props.as_ref().map(|p| &p.0) {
-            if let Some((key, Preview::Image(_))) = self.preview.take() {
-                ctx.forget_image(&image_uri(&key));
-            }
-            self.preview = None;
+        // the preview lives only as long as its properties panel; dropping it stops audio,
+        // and an image also leaves a cached texture behind
+        if self.preview.as_ref().map(|p| &p.0) != self.props.as_ref().map(|p| &p.0)
+            && let Some((key, Preview::Image(_))) = self.preview.take()
+        {
+            ctx.forget_image(&image_uri(&key));
         }
     }
 
@@ -267,21 +268,14 @@ impl App {
     }
 
     pub(crate) fn cur_bucket(&mut self) -> Option<Box<s3::Bucket>> {
-        let r = self.cur_profile()?.bucket(self.bucket.as_ref()?);
-        r.map_err(|e| self.status = Err(backend::nice_err(&*e)))
-            .ok()
+        let r = backend::nice(self.cur_profile()?.bucket(self.bucket.as_ref()?));
+        r.map_err(|e| self.status = Err(e)).ok()
     }
 
     pub(crate) fn refresh_buckets(&mut self) {
         let Some(p) = self.cur_profile() else { return };
         self.status = Ok("Loading buckets…".into());
-        self.spawn(async move {
-            Msg::Buckets(
-                backend::list_buckets(&p)
-                    .await
-                    .map_err(|e| backend::nice_err(&*e)),
-            )
-        });
+        self.spawn(async move { Msg::Buckets(backend::nice(backend::list_buckets(&p).await)) });
     }
 
     pub(crate) fn refresh(&mut self) {
@@ -289,9 +283,7 @@ impl App {
         let (bucket, prefix) = (b.name(), self.prefix.clone());
         self.loading = true;
         self.spawn(async move {
-            let result = backend::list_dir(&b, &prefix)
-                .await
-                .map_err(|e| backend::nice_err(&*e));
+            let result = backend::nice(backend::list_dir(&b, &prefix).await);
             Msg::Listing {
                 bucket,
                 prefix,
@@ -336,17 +328,15 @@ impl App {
         self.props = Some((key.clone(), Ok(vec![])));
         self.load_preview(key.clone());
         self.spawn(async move {
-            let r = backend::properties(&b, &key)
-                .await
-                .map_err(|e| backend::nice_err(&*e));
+            let r = backend::nice(backend::properties(&b, &key).await);
             Msg::Props(key, r)
         });
     }
 
     fn load_preview(&mut self, key: String) {
-        if media::kind(&key).is_none() {
+        let Some(kind) = media::kind(&key) else {
             return;
-        }
+        };
         let size = self
             .entries
             .iter()
@@ -359,18 +349,14 @@ impl App {
         }
         let Some(b) = self.cur_bucket() else { return };
         self.preview = Some((key.clone(), Preview::Loading));
-        let video = media::kind(&key) == Some(Kind::Video);
         self.spawn(async move {
-            let r = backend::fetch(&b, &key)
-                .await
-                .map_err(|e| backend::nice_err(&*e))
-                .and_then(|data| {
-                    if video {
-                        media::open_video(&key, data).map(Fetched::Video)
-                    } else {
-                        Ok(Fetched::Bytes(data))
-                    }
-                });
+            let r = backend::nice(backend::fetch(&b, &key).await).and_then(|data| {
+                if kind == Kind::Video {
+                    media::open_video(&key, data).map(Fetched::Video)
+                } else {
+                    Ok(Fetched::Bytes(data))
+                }
+            });
             Msg::Preview(key, r)
         });
     }
@@ -381,9 +367,9 @@ impl App {
             return;
         }
         let Some(b) = self.cur_bucket() else { return };
-        match self.rt.block_on(backend::browser_link(&b, key)) {
+        match backend::nice(self.rt.block_on(backend::browser_link(&b, key))) {
             Ok(url) => self.ctx.open_url(egui::OpenUrl::new_tab(url)),
-            Err(e) => self.status = Err(backend::nice_err(&*e)),
+            Err(e) => self.status = Err(e),
         }
     }
 
@@ -507,8 +493,7 @@ impl App {
                     return;
                 };
                 if self.bucket.as_ref() == Some(&name) {
-                    self.bucket = None;
-                    self.entries.clear();
+                    self.navigate(None, String::new());
                 }
                 let report = self.reporter();
                 self.spawn(async move {
@@ -531,7 +516,7 @@ impl App {
             }
             Dialog::Rename { from, to } => {
                 let Some(b) = self.cur_bucket() else { return };
-                let report = self.reporter();
+                let (to, report) = (to.trim().to_string(), self.reporter());
                 self.spawn(
                     async move { done(backend::rename(&b, from, to, &report).await, false) },
                 );

@@ -230,20 +230,24 @@ impl App {
         }
         if let Some((vi, m)) = click {
             let key = self.entries[view[vi]].key.clone();
+            let anchor = self
+                .anchor
+                .as_ref()
+                .and_then(|a| view.iter().position(|&i| &self.entries[i].key == a));
             if m.command {
                 if !self.selected.remove(&key) {
-                    self.selected.insert(key);
+                    self.selected.insert(key.clone());
                 }
-                self.anchor = Some(vi);
+                self.anchor = Some(key);
             } else if m.shift
-                && let Some(a) = self.anchor.filter(|&a| a < view.len())
+                && let Some(a) = anchor
             {
                 self.selected = (a.min(vi)..=a.max(vi))
                     .map(|i| self.entries[view[i]].key.clone())
                     .collect();
             } else {
-                self.selected = HashSet::from([key]);
-                self.anchor = Some(vi);
+                self.selected = HashSet::from([key.clone()]);
+                self.anchor = Some(key);
             }
         }
         if let Some(e) = open {

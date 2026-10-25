@@ -40,7 +40,7 @@ impl App {
                                 (
                                     "Endpoint",
                                     &mut p.endpoint,
-                                    "empty = AWS, or https://host:9000",
+                                    "https://s3.us-east-1.amazonaws.com",
                                     false,
                                 ),
                                 ("Region", &mut p.region, "us-east-1 / auto", false),
@@ -64,11 +64,14 @@ impl App {
                             ui.end_row();
                         });
                     ui.label(
-                        RichText::new("Keys are stored unencrypted in the app's config folder.")
-                            .small()
-                            .weak(),
+                        RichText::new(
+                            "Keys are encrypted for your user account when the system supports it.",
+                        )
+                        .small()
+                        .weak(),
                     );
-                    ("Save", false, !p.name.trim().is_empty(), idx.is_some())
+                    let valid = !p.name.trim().is_empty() && !p.endpoint.trim().is_empty();
+                    ("Save", false, valid, idx.is_some())
                 }
                 Dialog::NewBucket(name) => {
                     ui.heading("Create bucket");
@@ -112,7 +115,7 @@ impl App {
                     );
                     text(ui, to, "new/key", true);
                     let valid = !to.trim().is_empty()
-                        && to.trim_end_matches('/') != from.key.trim_end_matches('/');
+                        && to.trim().trim_end_matches('/') != from.key.trim_end_matches('/');
                     ("Rename", false, valid, false)
                 }
                 Dialog::Delete(entries) => {

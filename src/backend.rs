@@ -11,7 +11,6 @@ pub type Report<'a> = &'a (dyn Fn(String) + Send + Sync);
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct Profile {
     pub name: String,
-    /// Empty = AWS.
     pub endpoint: String,
     pub region: String,
     #[serde(with = "crate::secret")]
@@ -27,15 +26,12 @@ pub struct Profile {
 impl Profile {
     fn region(&self) -> Region {
         let region = match self.region.trim() {
-            "" => "us-east-1".to_string(),
-            r => r.to_string(),
+            "" => "us-east-1",
+            r => r,
         };
-        match self.endpoint.trim().trim_end_matches('/') {
-            "" => region.parse().unwrap_or(Region::UsEast1),
-            e => Region::Custom {
-                region,
-                endpoint: e.to_string(),
-            },
+        Region::Custom {
+            region: region.to_string(),
+            endpoint: self.endpoint.trim().trim_end_matches('/').to_string(),
         }
     }
 
@@ -74,6 +70,10 @@ pub struct Entry {
     pub size: u64,
     pub modified: String,
     pub is_dir: bool,
+}
+
+pub fn nice<T>(r: Res<T>) -> Result<T, String> {
+    r.map_err(|e| nice_err(&*e))
 }
 
 pub fn nice_err(e: &(dyn std::error::Error + Send + Sync)) -> String {
@@ -252,7 +252,10 @@ pub async fn plan_download(
         .await?
         .into_iter()
         .filter(|k| !k.ends_with('/'))
-        .filter_map(|k| Some((safe_rel(&k[prefix.len()..])?, k)).map(|(rel, k)| (k, dir.join(rel))))
+        .filter_map(|k| {
+            let path = dir.join(safe_rel(&k[prefix.len()..])?);
+            Some((k, path))
+        })
         .collect())
 }
 
@@ -273,7 +276,7 @@ pub async fn download(b: &Bucket, jobs: Vec<(String, PathBuf)>, report: Report<'
     Ok(format!("Downloaded {n} file(s)"))
 }
 
-/// Copy-source header must be URL-encoded; rust-s3 passes it through verbatim.
+/// Keeps the slashes. Also used for the copy-source header, which rust-s3 passes through verbatim.
 fn encode(key: &str) -> String {
     key.bytes()
         .map(|c| match c {
@@ -463,7 +466,7 @@ mod tests {
         let env = |k: &str, d: &str| std::env::var(k).unwrap_or_else(|_| d.to_string());
         let p = Profile {
             name: "test".into(),
-            endpoint: env("S3_TEST_ENDPOINT", ""),
+            endpoint: env("S3_TEST_ENDPOINT", "http://127.0.0.1:9000"),
             region: env("S3_TEST_REGION", "us-east-1"),
             access_key: env("S3_TEST_KEY", "minioadmin"),
             secret_key: env("S3_TEST_SECRET", "minioadmin"),

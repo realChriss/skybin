@@ -3,6 +3,16 @@ use crate::backend::Profile;
 use eframe::egui::{self, Align, Layout, RichText};
 
 impl App {
+    fn new_profile(&mut self) {
+        self.open_dialog(Dialog::Profile {
+            idx: None,
+            p: Profile {
+                region: "us-east-1".into(),
+                ..Default::default()
+            },
+        });
+    }
+
     pub(crate) fn sidebar(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         let heading = ui.label(RichText::new("CONNECTION").small().weak());
@@ -15,13 +25,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("➕").on_hover_text("New connection").clicked() {
-                    self.open_dialog(Dialog::Profile {
-                        idx: None,
-                        p: Profile {
-                            region: "us-east-1".into(),
-                            ..Default::default()
-                        },
-                    });
+                    self.new_profile();
                 }
                 if ui.button("✏").on_hover_text("Edit connection").clicked()
                     && let Some(i) = self.profile
@@ -80,13 +84,7 @@ impl App {
             ui.vertical_centered(|ui| {
                 ui.label(RichText::new("No connections yet").weak());
                 if ui.button("Add connection").clicked() {
-                    self.open_dialog(Dialog::Profile {
-                        idx: None,
-                        p: Profile {
-                            region: "us-east-1".into(),
-                            ..Default::default()
-                        },
-                    });
+                    self.new_profile();
                 }
             });
             return;
