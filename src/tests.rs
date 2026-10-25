@@ -1,5 +1,6 @@
 use crate::app::{App, Dialog, Preview};
 use crate::backend::{Entry, Profile};
+use crate::ui::icons::{BUCKET, EXTERNAL, FILE, FOLDER, SORT_ASC, TRASH};
 use eframe::egui::{self, Key, Modifiers, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -50,8 +51,11 @@ fn harness(app: App) -> Harness<'static, App> {
     let mut h = Harness::builder()
         .with_accessibility_check(false)
         .with_size([1100.0, 700.0])
+        .with_context_setup(|ctx| {
+            crate::ui::theme::apply(ctx);
+            crate::ui::theme::fonts(ctx, false);
+        })
         .build_ui_state(|ui, app: &mut App| app.show(ui), app);
-    crate::ui::theme::apply(&h.ctx);
     h.run();
     h
 }
@@ -104,7 +108,7 @@ fn folders_first_and_sorting() {
     h.get_by_value("Size").click();
     h.run();
     assert_eq!(names(&h), ["2024", "a.txt", "b.jpg"]);
-    h.get_by_value("Size ⏶").click();
+    h.get_by_value(&format!("Size {SORT_ASC}")).click();
     h.run();
     assert_eq!(
         names(&h),
@@ -122,19 +126,19 @@ fn click_ctrl_click_shift_click_and_escape() {
     let mut h = harness(browsing());
     h.run();
 
-    h.get_by_label("📄  a.txt").click();
+    h.get_by_label(&format!("{FILE}  a.txt")).click();
     h.run();
     assert_eq!(h.state().selected.len(), 1);
     h.get_by_label("1 of 3 selected · 10 B");
 
-    h.get_by_label("📄  b.jpg")
+    h.get_by_label(&format!("{FILE}  b.jpg"))
         .click_modifiers(Modifiers::COMMAND);
     h.run();
     assert_eq!(h.state().selected.len(), 2);
 
-    h.get_by_label("📁  2024").click();
+    h.get_by_label(&format!("{FOLDER}  2024")).click();
     h.run();
-    h.get_by_label("📄  b.jpg")
+    h.get_by_label(&format!("{FILE}  b.jpg"))
         .click_modifiers(Modifiers::SHIFT);
     h.run();
     assert_eq!(h.state().selected.len(), 3, "shift selects the range");
@@ -153,8 +157,8 @@ fn filter_hides_non_matching_rows() {
     filter.focus();
     filter.type_text("JPG");
     h.run();
-    assert!(h.query_by_label("📄  a.txt").is_none());
-    h.get_by_label("📄  b.jpg");
+    assert!(h.query_by_label(&format!("{FILE}  a.txt")).is_none());
+    h.get_by_label(&format!("{FILE}  b.jpg"));
 
     h.get_by_role(Role::TextInput).type_text("zzz");
     h.run();
@@ -165,7 +169,7 @@ fn filter_hides_non_matching_rows() {
 fn delete_asks_for_confirmation() {
     let mut h = harness(browsing());
     h.run();
-    h.get_by_label("📁  2024").click();
+    h.get_by_label(&format!("{FOLDER}  2024")).click();
     h.run();
     h.key_press(Key::Delete);
     h.run();
@@ -182,7 +186,7 @@ fn delete_asks_for_confirmation() {
 fn rename_needs_a_changed_key() {
     let mut h = harness(browsing());
     h.run();
-    h.get_by_label("📄  a.txt").click();
+    h.get_by_label(&format!("{FILE}  a.txt")).click();
     h.run();
     h.key_press(Key::F2);
     h.run();
@@ -206,7 +210,7 @@ fn rename_needs_a_changed_key() {
 fn enter_opens_folder_and_backspace_goes_up() {
     let mut h = harness(browsing());
     h.run();
-    h.get_by_label("📁  2024").click();
+    h.get_by_label(&format!("{FOLDER}  2024")).click();
     h.run();
     h.key_press(Key::Enter);
     h.run_ok(); // listing the folder fails offline; we only care about navigation
@@ -222,9 +226,10 @@ fn enter_opens_folder_and_backspace_goes_up() {
 fn bucket_context_menu_offers_delete() {
     let mut h = harness(browsing());
     h.run();
-    h.get_by_label("🗄  photos").click_secondary();
+    h.get_by_label(&format!("{BUCKET}  photos"))
+        .click_secondary();
     h.run();
-    h.get_by_label("🗑  Delete bucket…").click();
+    h.get_by_label(&format!("{TRASH}  Delete bucket…")).click();
     h.run();
     h.get_by_label("Delete bucket “photos”? This cannot be undone.");
     assert!(
@@ -253,7 +258,7 @@ fn image_preview_keeps_its_place() {
     let mut h = harness(app);
     let image = h.get_by_role(Role::Image).rect();
     assert!(h.get_by_label("ETag").rect().top() >= image.bottom());
-    assert!(h.get_by_label("↗").rect().bottom() <= image.top());
+    assert!(h.get_by_label(EXTERNAL).rect().bottom() <= image.top());
     for x in [900.0, 950.0, 1000.0] {
         h.hover_at(egui::pos2(x, 200.0));
         h.run_steps(3);
@@ -264,14 +269,14 @@ fn image_preview_keeps_its_place() {
 #[test]
 fn shift_click_ranges_from_the_same_file_after_sorting() {
     let mut h = harness(browsing());
-    h.get_by_label("📄  a.txt").click();
+    h.get_by_label(&format!("{FILE}  a.txt")).click();
     h.run();
     h.get_by_value("Size").click();
     h.run();
-    h.get_by_value("Size ⏶").click();
+    h.get_by_value(&format!("Size {SORT_ASC}")).click();
     h.run();
     assert_eq!(names(&h), ["2024", "b.jpg", "a.txt"]);
-    h.get_by_label("📄  b.jpg")
+    h.get_by_label(&format!("{FILE}  b.jpg"))
         .click_modifiers(Modifiers::SHIFT);
     h.run();
     assert_eq!(h.state().selected.len(), 2);
@@ -310,11 +315,31 @@ fn every_symbol_in_the_ui_has_a_glyph() {
     assert!(missing.is_empty(), "{missing:?}");
 }
 
+/// Every icon draws from Lucide, not from a later font that uses the same code point.
+#[test]
+fn icons_come_from_lucide() {
+    let ctx = harness(App::new(vec![], None)).ctx.clone();
+    let icons = include_str!("ui/icons.rs").split(r"\u{").skip(1);
+    for hex in icons.map(|s| &s[..s.find('}').unwrap()]) {
+        let c = char::from_u32(u32::from_str_radix(hex, 16).unwrap()).unwrap();
+        let fonts = ctx.fonts_mut(|f| {
+            f.characters(&egui::FontFamily::Proportional)
+                .get(&c)
+                .cloned()
+        });
+        assert_eq!(
+            fonts.unwrap_or_default().first().map(|s| s.as_str()),
+            Some("lucide"),
+            "U+{hex}"
+        );
+    }
+}
+
 #[cfg(windows)]
 #[test]
 fn system_fonts_draw_other_scripts() {
     let mut h = harness(App::new(vec![], None));
-    crate::ui::theme::system_fonts(&h.ctx);
+    crate::ui::theme::fonts(&h.ctx, true);
     h.run();
     let font = egui::FontId::proportional(14.0);
     for c in ['中', 'あ', '한', 'ع', '✓'] {

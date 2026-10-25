@@ -1,5 +1,6 @@
 mod browser;
 mod dialogs;
+pub mod icons;
 mod panels;
 mod sidebar;
 pub mod theme;

@@ -1,4 +1,4 @@
-use super::{RED, human};
+use super::{RED, human, icons};
 use crate::app::{App, Dialog, Sort};
 use crate::backend::Entry;
 use eframe::egui::{self, Align, Key, Layout, RichText, Sense};
@@ -12,13 +12,17 @@ impl App {
         };
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(!self.prefix.is_empty(), egui::Button::new("⬅"))
+                .add_enabled(!self.prefix.is_empty(), egui::Button::new(icons::BACK))
                 .on_hover_text("Up (Backspace)")
                 .clicked()
             {
                 self.go_up();
             }
-            if ui.button("⟳").on_hover_text("Refresh (F5)").clicked() {
+            if ui
+                .button(icons::REFRESH)
+                .on_hover_text("Refresh (F5)")
+                .clicked()
+            {
                 self.refresh();
             }
             ui.separator();
@@ -32,7 +36,7 @@ impl App {
             let mut acc = String::new();
             for part in self.prefix.split_terminator('/') {
                 acc = format!("{acc}{part}/");
-                ui.label(RichText::new("›").weak());
+                ui.label(RichText::new(icons::CRUMB).weak());
                 if ui.add(egui::Button::new(part).frame(false)).clicked() {
                     nav = Some(acc.clone());
                 }
@@ -52,33 +56,42 @@ impl App {
                     .on_disabled_hover_text(tip)
                     .clicked()
             };
-            if btn(ui, true, "⬆".into(), "Upload files (or drag & drop)")
-                && let Some(files) = rfd::FileDialog::new().pick_files()
+            if btn(
+                ui,
+                true,
+                icons::UPLOAD.into(),
+                "Upload files (or drag & drop)",
+            ) && let Some(files) = rfd::FileDialog::new().pick_files()
             {
                 self.upload(files);
             }
-            if btn(ui, true, "📁".into(), "Upload folder")
+            if btn(ui, true, icons::UPLOAD_FOLDER.into(), "Upload folder")
                 && let Some(dir) = rfd::FileDialog::new().pick_folder()
             {
                 self.upload(vec![dir]);
             }
-            if btn(ui, true, "➕".into(), "New folder") {
+            if btn(ui, true, icons::NEW_FOLDER.into(), "New folder") {
                 self.open_dialog(Dialog::NewFolder(String::new()));
             }
             ui.separator();
-            if btn(ui, n > 0, "⬇".into(), "Download") {
+            if btn(ui, n > 0, icons::DOWNLOAD.into(), "Download") {
                 self.download();
             }
-            if btn(ui, n == 1, "✏".into(), "Rename / move (F2)") {
+            if btn(ui, n == 1, icons::EDIT.into(), "Rename / move (F2)") {
                 self.ask_rename();
             }
-            if btn(ui, n > 0, RichText::new("🗑").color(RED), "Delete (Del)") {
+            if btn(
+                ui,
+                n > 0,
+                RichText::new(icons::TRASH).color(RED),
+                "Delete (Del)",
+            ) {
                 self.ask_delete();
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.filter)
-                        .hint_text("🔍 Filter")
+                        .hint_text(format!("{}  Filter", icons::SEARCH))
                         .desired_width(180.0),
                 );
             });
@@ -137,9 +150,9 @@ impl App {
                     (Sort::Modified, "Modified"),
                 ] {
                     let arrow = match self.sort {
-                        (c, true) if c == col => " ⏶",
-                        (c, false) if c == col => " ⏷",
-                        _ => "",
+                        (c, true) if c == col => format!(" {}", icons::SORT_ASC),
+                        (c, false) if c == col => format!(" {}", icons::SORT_DESC),
+                        _ => String::new(),
                     };
                     // The cell's own response: a button inside would lose the click to the clickable header row.
                     h.col(|ui| {
@@ -158,9 +171,9 @@ impl App {
                     row.set_selected(self.selected.contains(&e.key));
                     row.col(|ui| {
                         ui.label(if e.is_dir {
-                            format!("📁  {}", e.name)
+                            format!("{}  {}", icons::FOLDER, e.name)
                         } else {
-                            format!("📄  {}", e.name)
+                            format!("{}  {}", icons::FILE, e.name)
                         });
                     });
                     row.col(|ui| {
@@ -188,28 +201,26 @@ impl App {
                         click = Some((vi, egui::Modifiers::NONE));
                     }
                     r.context_menu(|ui| {
-                        for (label, act) in [
-                            (
-                                if e.is_dir {
-                                    "📂  Open"
-                                } else {
-                                    "ℹ  Properties"
-                                },
-                                "open",
-                            ),
-                            ("⬇  Download", "download"),
-                            ("✏  Rename / move", "rename"),
-                            ("📋  Copy key", "copy"),
-                            ("🔗  Copy URL (7 days)", "url"),
-                            ("🌐  Copy public URL", "public"),
-                            ("🗑  Delete", "delete"),
+                        let first = if e.is_dir {
+                            (icons::FOLDER_OPEN, "Open")
+                        } else {
+                            (icons::INFO, "Properties")
+                        };
+                        for ((icon, label), act) in [
+                            (first, "open"),
+                            ((icons::DOWNLOAD, "Download"), "download"),
+                            ((icons::EDIT, "Rename / move"), "rename"),
+                            ((icons::COPY, "Copy key"), "copy"),
+                            ((icons::LINK, "Copy URL (7 days)"), "url"),
+                            ((icons::GLOBE, "Copy public URL"), "public"),
+                            ((icons::TRASH, "Delete"), "delete"),
                         ] {
                             if (act == "url" || act == "public") && e.is_dir
                                 || act == "public" && !has_public
                             {
                                 continue;
                             }
-                            if ui.button(label).clicked() {
+                            if ui.button(format!("{icon}  {label}")).clicked() {
                                 menu_action = Some((act, e.clone()));
                             }
                         }

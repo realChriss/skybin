@@ -1,4 +1,4 @@
-use super::{RED, human};
+use super::{RED, human, icons};
 use crate::app::{App, Preview, image_uri};
 use crate::media::Playback;
 use crate::update;
@@ -12,7 +12,14 @@ fn clock(d: Duration) -> String {
 
 fn controls(ui: &mut egui::Ui, media: &mut dyn Playback) {
     ui.horizontal(|ui| {
-        if ui.button(if media.playing() { "⏸" } else { "▶" }).clicked() {
+        if ui
+            .button(if media.playing() {
+                icons::PAUSE
+            } else {
+                icons::PLAY
+            })
+            .clicked()
+        {
             media.toggle();
         }
         let total = media.total().map_or_else(|| "-:--".to_string(), clock);
@@ -70,8 +77,11 @@ impl App {
         ui.horizontal(|ui| {
             ui.strong("Properties");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                close = ui.button("✖").clicked();
-                open = ui.button("↗").on_hover_text("Open in browser").clicked();
+                close = ui.button(icons::CLOSE).clicked();
+                open = ui
+                    .button(icons::EXTERNAL)
+                    .on_hover_text("Open in browser")
+                    .clicked();
             });
         });
         if open {
@@ -79,7 +89,10 @@ impl App {
         }
         ui.separator();
         ui.add(egui::Label::new(RichText::new(&key).monospace()).wrap());
-        if ui.small_button("📋 Copy key").clicked() {
+        if ui
+            .small_button(format!("{}  Copy key", icons::COPY))
+            .clicked()
+        {
             ui.ctx().copy_text(key.clone());
         }
         self.preview_ui(ui, &key);
@@ -146,7 +159,7 @@ impl App {
             }
             match &self.status {
                 Ok(s) => ui.label(RichText::new(s).weak()),
-                Err(e) => ui.colored_label(RED, format!("⚠ {e}")),
+                Err(e) => ui.colored_label(RED, format!("{}  {e}", icons::WARNING)),
             };
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if self.bucket.is_some() {
@@ -206,6 +219,7 @@ mod tests {
         let mut h = Harness::builder()
             .with_size([320.0, 60.0])
             .with_accessibility_check(false)
+            .with_context_setup(|ctx| crate::ui::theme::fonts(ctx, false))
             .build_ui_state(
                 |ui, p: &mut Playing| {
                     p.pos += Duration::from_millis(16);

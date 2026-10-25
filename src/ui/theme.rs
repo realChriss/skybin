@@ -30,10 +30,16 @@ const SYSTEM_FONTS: &[&str] = if cfg!(windows) {
     ]
 };
 
-/// Adds the system's fonts after egui's own, so they only draw what those lack.
-pub fn system_fonts(ctx: &egui::Context) {
+/// Lucide goes first because egui's own icon font also uses the private use area. The system's
+/// fonts go last, so they only draw what egui's lack.
+pub fn fonts(ctx: &egui::Context, system: bool) {
     let mut fonts = FontDefinitions::default();
-    for path in SYSTEM_FONTS {
+    let lucide = FontData::from_static(include_bytes!("../../assets/lucide.ttf"));
+    fonts.font_data.insert("lucide".into(), Arc::new(lucide));
+    for family in fonts.families.values_mut() {
+        family.insert(0, "lucide".into());
+    }
+    for path in SYSTEM_FONTS.iter().filter(|_| system) {
         let Ok(data) = std::fs::read(path) else {
             continue;
         };

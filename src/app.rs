@@ -250,8 +250,10 @@ impl App {
                 Msg::UpdateAvailable(tag) => self.new_version = Some(tag),
                 Msg::Updated(tag, r) => match r {
                     Ok(()) => {
-                        self.update_line =
-                            Some(format!("✔ Updated to {tag}. Restart Skybin to use it."))
+                        self.update_line = Some(format!(
+                            "{} Updated to {tag}. Restart Skybin to use it.",
+                            crate::ui::icons::CHECK
+                        ))
                     }
                     Err(e) => {
                         self.update_line = None;

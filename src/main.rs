@@ -28,7 +28,7 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| {
             ui::theme::apply(&cc.egui_ctx);
-            ui::theme::system_fonts(&cc.egui_ctx);
+            ui::theme::fonts(&cc.egui_ctx, true);
             let profiles = cc
                 .storage
                 .and_then(|s| eframe::get_value(s, "profiles"))

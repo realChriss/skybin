@@ -1,3 +1,4 @@
+use super::icons;
 use crate::app::{App, Dialog};
 use crate::backend::Profile;
 use eframe::egui::{self, Align, Layout, RichText};
@@ -24,10 +25,17 @@ impl App {
         // sizing from `available_width()` in a resizable panel otherwise makes it grow every frame.
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("➕").on_hover_text("New connection").clicked() {
+                if ui
+                    .button(icons::PLUS)
+                    .on_hover_text("New connection")
+                    .clicked()
+                {
                     self.new_profile();
                 }
-                if ui.button("✏").on_hover_text("Edit connection").clicked()
+                if ui
+                    .button(icons::EDIT)
+                    .on_hover_text("Edit connection")
+                    .clicked()
                     && let Some(i) = self.profile
                 {
                     self.open_dialog(Dialog::Profile {
@@ -62,14 +70,14 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let on = self.profile.is_some();
                 if ui
-                    .add_enabled(on, egui::Button::new("⟳").small())
+                    .add_enabled(on, egui::Button::new(icons::REFRESH).small())
                     .on_hover_text("Refresh buckets")
                     .clicked()
                 {
                     self.refresh_buckets();
                 }
                 if ui
-                    .add_enabled(on, egui::Button::new("➕").small())
+                    .add_enabled(on, egui::Button::new(icons::PLUS).small())
                     .on_hover_text("Create bucket")
                     .clicked()
                 {
@@ -99,15 +107,21 @@ impl App {
                 ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
                     for b in &self.buckets {
                         let sel = self.bucket.as_ref() == Some(b);
-                        let r = ui.selectable_label(sel, format!("🗄  {b}"));
+                        let r = ui.selectable_label(sel, format!("{}  {b}", icons::BUCKET));
                         if r.clicked() {
                             clicked = Some(b.clone());
                         }
                         r.context_menu(|ui| {
-                            if ui.button("🌐  Public URL…").clicked() {
+                            if ui
+                                .button(format!("{}  Public URL…", icons::GLOBE))
+                                .clicked()
+                            {
                                 public = Some(b.clone());
                             }
-                            if ui.button("🗑  Delete bucket…").clicked() {
+                            if ui
+                                .button(format!("{}  Delete bucket…", icons::TRASH))
+                                .clicked()
+                            {
                                 delete = Some(b.clone());
                             }
                         });
