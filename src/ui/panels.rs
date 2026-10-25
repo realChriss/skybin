@@ -1,4 +1,4 @@
-use super::{RED, human, icons};
+use super::{RED, count, ghost, human, icons};
 use crate::app::{App, Preview, image_uri};
 use crate::media::Playback;
 use crate::update;
@@ -73,52 +73,56 @@ impl App {
         let Some((key, _)) = &self.props else { return };
         let key = key.clone();
         let (mut close, mut open) = (false, false);
-        ui.add_space(6.0);
+        ui.add_space(8.0);
         ui.horizontal(|ui| {
-            ui.strong("Properties");
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                close = ui.button(icons::CLOSE).clicked();
+                ui.spacing_mut().item_spacing.x = 2.0;
+                close = ui.add(ghost(icons::CLOSE)).on_hover_text("Close").clicked();
                 open = ui
-                    .button(icons::EXTERNAL)
+                    .add(ghost(icons::EXTERNAL))
                     .on_hover_text("Open in browser")
                     .clicked();
+                if ui
+                    .add(ghost(icons::COPY))
+                    .on_hover_text("Copy key")
+                    .clicked()
+                {
+                    ui.ctx().copy_text(key.clone());
+                }
+                let name = key.rsplit('/').next().unwrap_or(&key);
+                ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+                    ui.add(egui::Label::new(RichText::new(name).strong().size(15.0)).truncate());
+                });
             });
         });
         if open {
             self.open_in_browser(&key);
         }
-        ui.separator();
-        ui.add(egui::Label::new(RichText::new(&key).monospace()).wrap());
-        if ui
-            .small_button(format!("{}  Copy key", icons::COPY))
-            .clicked()
-        {
-            ui.ctx().copy_text(key.clone());
+        if key.contains('/') {
+            ui.add(egui::Label::new(RichText::new(&key).monospace().weak()).wrap());
         }
         self.preview_ui(ui, &key);
-        ui.add_space(8.0);
+        ui.add_space(12.0);
         let Some((_, r)) = &self.props else { return };
-        egui::ScrollArea::vertical().show(ui, |ui| match r {
-            Ok(rows) if rows.is_empty() => {
-                ui.spinner();
-            }
-            Ok(rows) => {
-                egui::Grid::new("props")
-                    .num_columns(2)
-                    .striped(true)
-                    .spacing([12.0, 6.0])
-                    .show(ui, |ui| {
-                        for (k, v) in rows {
-                            ui.label(RichText::new(k).weak());
-                            ui.add(egui::Label::new(v).wrap());
-                            ui.end_row();
-                        }
-                    });
-            }
-            Err(e) => {
-                ui.colored_label(RED, e);
-            }
-        });
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, true])
+            .show(ui, |ui| match r {
+                Ok(rows) if rows.is_empty() => {
+                    let w = ui.available_width() * 0.6;
+                    super::skeleton(ui, 6, &[w]);
+                }
+                Ok(rows) => {
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for (k, v) in rows {
+                        ui.label(RichText::new(k).small().weak());
+                        ui.add(egui::Label::new(v).wrap());
+                        ui.add_space(10.0);
+                    }
+                }
+                Err(e) => {
+                    ui.colored_label(RED, e);
+                }
+            });
         if close {
             self.props = None;
         }
@@ -166,7 +170,7 @@ impl App {
                     let sel = self.selection();
                     let size: u64 = sel.iter().map(|e| e.size).sum();
                     let txt = if sel.is_empty() {
-                        format!("{} items", self.entries.len())
+                        count(self.entries.len(), "item")
                     } else {
                         format!(
                             "{} of {} selected · {}",

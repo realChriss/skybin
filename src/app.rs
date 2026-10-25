@@ -10,7 +10,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 pub(crate) type Props = Result<Vec<(String, String)>, String>;
 
 pub(crate) enum Msg {
-    Buckets(Result<Vec<String>, String>),
+    Buckets(usize, Result<Vec<String>, String>),
     Listing {
         bucket: String,
         prefix: String,
@@ -78,6 +78,8 @@ pub struct App {
     pub(crate) profiles: Vec<Profile>,
     pub(crate) profile: Option<usize>,
     pub(crate) buckets: Vec<String>,
+    pub(crate) loading_buckets: bool,
+    pub(crate) buckets_err: Option<String>,
     pub(crate) bucket: Option<String>,
     pub(crate) prefix: String,
     pub(crate) entries: Vec<Entry>,
@@ -93,6 +95,7 @@ pub struct App {
     pub(crate) focus_dialog: bool,
     pub(crate) busy: usize,
     pub(crate) loading: bool,
+    pub(crate) list_err: Option<String>,
     pub(crate) status: Result<String, String>,
     pub(crate) new_version: Option<String>,
     pub(crate) update_line: Option<String>,
@@ -110,6 +113,8 @@ impl App {
             profile: profile.filter(|&i| i < profiles.len()),
             profiles,
             buckets: vec![],
+            loading_buckets: false,
+            buckets_err: None,
             bucket: None,
             prefix: String::new(),
             entries: vec![],
@@ -123,6 +128,7 @@ impl App {
             focus_dialog: false,
             busy: 0,
             loading: false,
+            list_err: None,
             status: Ok("Ready".into()),
             new_version: None,
             update_line: None,
@@ -191,13 +197,22 @@ impl App {
                 self.busy = self.busy.saturating_sub(1);
             }
             match msg {
-                Msg::Buckets(r) => match r {
-                    Ok(b) => {
-                        self.status = Ok(format!("{} bucket(s)", b.len()));
-                        self.buckets = b;
+                Msg::Buckets(profile, r) => {
+                    if self.profile != Some(profile) {
+                        continue;
                     }
-                    Err(e) => self.status = Err(e),
-                },
+                    self.loading_buckets = false;
+                    match r {
+                        Ok(b) => {
+                            self.status = Ok(crate::ui::count(b.len(), "bucket"));
+                            self.buckets = b;
+                        }
+                        Err(e) => {
+                            self.buckets_err = Some(e.clone());
+                            self.status = Err(e);
+                        }
+                    }
+                }
                 Msg::Listing {
                     bucket,
                     prefix,
@@ -207,6 +222,7 @@ impl App {
                         continue;
                     }
                     self.loading = false;
+                    self.list_err = result.as_ref().err().cloned();
                     match result {
                         Ok(e) => {
                             self.entries = e;
@@ -275,15 +291,23 @@ impl App {
     }
 
     pub(crate) fn refresh_buckets(&mut self) {
-        let Some(p) = self.cur_profile() else { return };
+        self.buckets_err = None;
+        let (Some(i), Some(p)) = (self.profile, self.cur_profile()) else {
+            return;
+        };
+        self.loading_buckets = true;
         self.status = Ok("Loading buckets…".into());
-        self.spawn(async move { Msg::Buckets(backend::nice(backend::list_buckets(&p).await)) });
+        self.spawn(async move { Msg::Buckets(i, backend::nice(backend::list_buckets(&p).await)) });
     }
 
     pub(crate) fn refresh(&mut self) {
-        let Some(b) = self.cur_bucket() else { return };
+        let Some(b) = self.cur_bucket() else {
+            self.list_err = self.status.clone().err();
+            return;
+        };
         let (bucket, prefix) = (b.name(), self.prefix.clone());
         self.loading = true;
+        self.list_err = None;
         self.spawn(async move {
             let result = backend::nice(backend::list_dir(&b, &prefix).await);
             Msg::Listing {

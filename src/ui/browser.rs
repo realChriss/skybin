@@ -1,34 +1,51 @@
-use super::{RED, human, icons};
+use super::{FOLDER, RED, ROW, empty_state, ghost, human, icons, primary, skeleton};
 use crate::app::{App, Dialog, Sort};
 use crate::backend::Entry;
+use eframe::egui::text::{LayoutJob, TextFormat};
 use eframe::egui::{self, Align, Key, Layout, RichText, Sense};
 use egui_extras::{Column, TableBuilder};
 use std::collections::HashSet;
 
 impl App {
+    fn pick_files(&mut self) {
+        if let Some(files) = rfd::FileDialog::new().pick_files() {
+            self.upload(files);
+        }
+    }
+
     pub(crate) fn toolbar(&mut self, ui: &mut egui::Ui) {
         let Some(bucket) = self.bucket.clone() else {
             return;
         };
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
             if ui
-                .add_enabled(!self.prefix.is_empty(), egui::Button::new(icons::BACK))
+                .add_enabled(!self.prefix.is_empty(), ghost(icons::BACK))
                 .on_hover_text("Up (Backspace)")
                 .clicked()
             {
                 self.go_up();
             }
             if ui
-                .button(icons::REFRESH)
+                .add(ghost(icons::REFRESH))
                 .on_hover_text("Refresh (F5)")
                 .clicked()
             {
                 self.refresh();
             }
-            ui.separator();
+            ui.add_space(6.0);
             let mut nav = None;
+            let crumb = |text: &str, current: bool| {
+                let text = if current {
+                    RichText::new(text).strong()
+                } else {
+                    RichText::new(text).weak()
+                };
+                egui::Button::new(text).frame(false)
+            };
             if ui
-                .add(egui::Button::new(RichText::new(&bucket).strong()).frame(false))
+                .add(crumb(&bucket, self.prefix.is_empty()))
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
                 .clicked()
             {
                 nav = Some(String::new());
@@ -36,8 +53,22 @@ impl App {
             let mut acc = String::new();
             for part in self.prefix.split_terminator('/') {
                 acc = format!("{acc}{part}/");
-                ui.label(RichText::new(icons::CRUMB).weak());
-                if ui.add(egui::Button::new(part).frame(false)).clicked() {
+                let galley = ui.painter().layout_no_wrap(
+                    icons::CRUMB.into(),
+                    egui::FontId::proportional(13.0),
+                    ui.visuals().weak_text_color(),
+                );
+                let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::hover());
+                ui.painter().galley(
+                    rect.min + egui::vec2(0.0, 0.5),
+                    galley,
+                    egui::Color32::PLACEHOLDER,
+                );
+                if ui
+                    .add(crumb(part, acc == self.prefix))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .clicked()
+                {
                     nav = Some(acc.clone());
                 }
             }
@@ -45,26 +76,25 @@ impl App {
                 self.navigate(self.bucket.clone(), p);
             }
         });
-        ui.add_space(2.0);
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 4.0;
-            ui.spacing_mut().button_padding = egui::vec2(7.0, 3.0);
+            ui.spacing_mut().item_spacing.x = 2.0;
+            ui.spacing_mut().button_padding = egui::vec2(7.0, 5.0);
             let n = self.selected.len();
             let btn = |ui: &mut egui::Ui, on: bool, icon: RichText, tip: &str| {
-                ui.add_enabled(on, egui::Button::new(icon))
+                ui.add_enabled(on, ghost(icon))
                     .on_hover_text(tip)
                     .on_disabled_hover_text(tip)
                     .clicked()
             };
-            if btn(
-                ui,
-                true,
-                icons::UPLOAD.into(),
-                "Upload files (or drag & drop)",
-            ) && let Some(files) = rfd::FileDialog::new().pick_files()
+            if ui
+                .add(primary(format!("{}  Upload", icons::UPLOAD)))
+                .on_hover_text("Upload files (or drag & drop)")
+                .clicked()
             {
-                self.upload(files);
+                self.pick_files();
             }
+            ui.add_space(4.0);
             if btn(ui, true, icons::UPLOAD_FOLDER.into(), "Upload folder")
                 && let Some(dir) = rfd::FileDialog::new().pick_folder()
             {
@@ -92,11 +122,11 @@ impl App {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.filter)
                         .hint_text(format!("{}  Filter", icons::SEARCH))
-                        .desired_width(180.0),
+                        .desired_width(200.0),
                 );
             });
         });
-        ui.add_space(4.0);
+        ui.add_space(6.0);
     }
 
     pub(crate) fn table(&mut self, ui: &mut egui::Ui) {
@@ -106,15 +136,40 @@ impl App {
             .collect();
 
         if view.is_empty() {
-            ui.centered_and_justified(|ui| {
-                if self.loading {
-                    ui.spinner();
-                } else if f.is_empty() {
-                    ui.label(RichText::new("Empty folder — drop files here to upload").weak());
-                } else {
-                    ui.label(RichText::new("No matches").weak());
+            if self.loading {
+                skeleton(ui, 8, &[90.0, 140.0]);
+            } else if self.entries.is_empty()
+                && let Some(e) = self.list_err.clone()
+            {
+                let icon = RichText::new(icons::WARNING).color(RED);
+                if empty_state(ui, icon, "Couldn't open this folder", &e, |ui| {
+                    ui.button("Retry").clicked()
+                }) {
+                    self.refresh();
                 }
-            });
+            } else if f.is_empty() {
+                let icon = RichText::new(icons::FOLDER_OPEN).weak();
+                if empty_state(
+                    ui,
+                    icon,
+                    "This folder is empty",
+                    "Drop files here to upload them.",
+                    |ui| {
+                        ui.button(format!("{}  Upload files", icons::UPLOAD))
+                            .clicked()
+                    },
+                ) {
+                    self.pick_files();
+                }
+            } else {
+                let icon = RichText::new(icons::SEARCH).weak();
+                let detail = format!("No names here contain “{}”.", self.filter);
+                if empty_state(ui, icon, "No matches", &detail, |ui| {
+                    ui.button("Clear filter").clicked()
+                }) {
+                    self.filter.clear();
+                }
+            }
             return;
         }
 
@@ -136,14 +191,18 @@ impl App {
             at_click.unwrap_or(i.modifiers)
         });
 
+        let rule = ui.cursor().top() + ROW + ui.spacing().item_spacing.y / 2.0;
+        let (width, stroke) = (
+            ui.max_rect().x_range(),
+            ui.visuals().widgets.noninteractive.bg_stroke,
+        );
         TableBuilder::new(ui)
-            .striped(true)
             .sense(Sense::click())
             .cell_layout(Layout::left_to_right(Align::Center))
             .column(Column::remainder().at_least(120.0).clip(true))
             .column(Column::exact(90.0))
             .column(Column::exact(140.0))
-            .header(24.0, |mut h| {
+            .header(ROW, |mut h| {
                 for (col, label) in [
                     (Sort::Name, "Name"),
                     (Sort::Size, "Size"),
@@ -156,7 +215,7 @@ impl App {
                     };
                     // The cell's own response: a button inside would lose the click to the clickable header row.
                     h.col(|ui| {
-                        let text = RichText::new(format!("{label}{arrow}")).strong();
+                        let text = RichText::new(format!("{label}{arrow}")).weak();
                         let r = ui.add(egui::Label::new(text).sense(Sense::click()));
                         if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
                             sort_by = Some(col);
@@ -165,16 +224,26 @@ impl App {
                 }
             })
             .body(|body| {
-                body.rows(24.0, view.len(), |mut row| {
+                body.rows(ROW, view.len(), |mut row| {
                     let vi = row.index();
                     let e = &self.entries[view[vi]];
                     row.set_selected(self.selected.contains(&e.key));
                     row.col(|ui| {
-                        ui.label(if e.is_dir {
-                            format!("{}  {}", icons::FOLDER, e.name)
+                        let (icon, color) = if e.is_dir {
+                            (icons::FOLDER, FOLDER)
                         } else {
-                            format!("{}  {}", icons::FILE, e.name)
-                        });
+                            (icons::FILE, ui.visuals().weak_text_color())
+                        };
+                        let font = egui::TextStyle::Body.resolve(ui.style());
+                        let mut job = LayoutJob::default();
+                        job.append(icon, 0.0, TextFormat::simple(font.clone(), color));
+                        let name = format!("  {}", e.name);
+                        job.append(
+                            &name,
+                            0.0,
+                            TextFormat::simple(font, ui.visuals().text_color()),
+                        );
+                        ui.label(job);
                     });
                     row.col(|ui| {
                         if !e.is_dir {
@@ -227,6 +296,7 @@ impl App {
                     });
                 });
             });
+        ui.painter().hline(width, rule, stroke);
 
         if let Some(col) = sort_by {
             self.sort = (

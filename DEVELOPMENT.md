@@ -29,4 +29,4 @@ Release builds get their version from the tag through `SKYBIN_VERSION`. Only tho
 
 ## UI icons
 
-The UI uses [Lucide](https://lucide.dev/icons) icons from a font. `scripts/icons.py` (needs fonttools) keeps only the icons it lists in `assets/lucide.ttf` and writes their names to `src/ui/icons.rs`. To add one, add it to that list and run `python scripts/icons.py`.
+The UI uses [Lucide](https://lucide.dev/icons) icons from a font. `scripts/icons.py` (needs fonttools) keeps only the icons it lists in `assets/lucide.ttf` and writes their names to `src/ui/icons.rs`. To add one, add it to that list and run `python scripts/icons.py`. Text is set in [Geist](https://vercel.com/font) and Geist Mono (`assets/geist.ttf`, `assets/geist-mono.ttf`, SIL OFL).

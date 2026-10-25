@@ -1,6 +1,6 @@
 use crate::app::{App, Dialog, Preview};
 use crate::backend::{Entry, Profile};
-use crate::ui::icons::{BUCKET, EXTERNAL, FILE, FOLDER, SORT_ASC, TRASH};
+use crate::ui::icons::{BUCKET, EXTERNAL, FILE, FOLDER, SORT_ASC, TRASH, UPLOAD};
 use eframe::egui::{self, Key, Modifiers, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
@@ -163,6 +163,24 @@ fn filter_hides_non_matching_rows() {
     h.get_by_role(Role::TextInput).type_text("zzz");
     h.run();
     h.get_by_label("No matches");
+    h.get_by_label("Clear filter").click();
+    h.run();
+    assert!(h.state().filter.is_empty());
+}
+
+#[test]
+fn empty_and_failed_folders_offer_a_way_out() {
+    let mut app = browsing();
+    app.entries.clear();
+    app.list_err = Some("Access denied".into());
+    let mut h = harness(app);
+    h.get_by_label("Couldn't open this folder");
+    h.get_by_label("Retry");
+
+    h.state_mut().list_err = None;
+    h.run();
+    h.get_by_label("This folder is empty");
+    h.get_by_label(&format!("{UPLOAD}  Upload files"));
 }
 
 #[test]
@@ -174,7 +192,7 @@ fn delete_asks_for_confirmation() {
     h.key_press(Key::Delete);
     h.run();
 
-    h.get_by_label("Delete 1 item(s)? This cannot be undone.");
+    h.get_by_label("Delete 1 item? This cannot be undone.");
     h.get_by_label("Folders are deleted with everything inside them.");
     h.get_by_label("Cancel").click();
     h.run();
@@ -345,4 +363,20 @@ fn system_fonts_draw_other_scripts() {
     for c in ['中', 'あ', '한', 'ع', '✓'] {
         assert!(h.ctx.fonts_mut(|f| f.has_glyph(&font, c)), "{c}");
     }
+}
+
+#[test]
+fn bucket_replies_for_another_connection_are_ignored() {
+    let mut app = browsing();
+    app.loading_buckets = true;
+    app.tx
+        .send(crate::app::Msg::Buckets(1, Err("old".into())))
+        .unwrap();
+    app.poll();
+    assert!(app.loading_buckets && app.buckets_err.is_none());
+    app.tx
+        .send(crate::app::Msg::Buckets(0, Err("down".into())))
+        .unwrap();
+    app.poll();
+    assert!(!app.loading_buckets && app.buckets_err.as_deref() == Some("down"));
 }

@@ -8,8 +8,69 @@ pub mod theme;
 use crate::app::App;
 use eframe::egui::{self, Color32, Id, Key, RichText, vec2};
 
-pub const RED: Color32 = Color32::from_rgb(220, 80, 80);
+/// No single red reads both as text on the dark panels and behind white text, so there are two.
+pub const RED: Color32 = Color32::from_rgb(240, 110, 110);
+pub const RED_FILL: Color32 = Color32::from_rgb(200, 60, 60);
 pub const ACCENT: Color32 = Color32::from_rgb(45, 100, 180);
+pub const FOLDER: Color32 = Color32::from_rgb(110, 160, 225);
+const CONTENT: Color32 = Color32::from_rgb(27, 28, 32);
+pub const ROW: f32 = 28.0;
+
+pub fn ghost(text: impl Into<egui::WidgetText>) -> egui::Button<'static> {
+    egui::Button::new(text).frame_when_inactive(false)
+}
+
+pub fn primary(text: impl Into<String>) -> egui::Button<'static> {
+    egui::Button::new(RichText::new(text).color(Color32::WHITE)).fill(ACCENT)
+}
+
+pub fn count(n: usize, noun: &str) -> String {
+    format!("{n} {noun}{}", if n == 1 { "" } else { "s" })
+}
+
+pub fn skeleton(ui: &mut egui::Ui, rows: usize, cols: &[f32]) {
+    let fill = ui.visuals().widgets.inactive.weak_bg_fill;
+    for i in 0..rows {
+        let (rect, _) =
+            ui.allocate_exact_size(vec2(ui.available_width(), ROW), egui::Sense::hover());
+        let mut right = rect.right();
+        let mut spans = vec![];
+        for &w in cols.iter().rev() {
+            right -= w;
+            spans.push((right, w));
+        }
+        spans.push((rect.left() + 4.0, right - rect.left() - 12.0));
+        for (c, (x, w)) in spans.into_iter().enumerate() {
+            let f = [0.7, 0.45, 0.6, 0.35, 0.55][(i + c) % 5];
+            let bar = egui::Rect::from_min_size(
+                egui::pos2(x, rect.center().y - 5.0),
+                vec2((w * f).max(0.0), 10.0),
+            );
+            ui.painter().rect_filled(bar, 3.0, fill);
+        }
+    }
+}
+
+pub fn empty_state<R>(
+    ui: &mut egui::Ui,
+    icon: RichText,
+    title: &str,
+    detail: &str,
+    action: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
+    ui.vertical_centered(|ui| {
+        ui.add_space(ui.available_height() * 0.3);
+        ui.label(icon.size(32.0));
+        ui.add_space(4.0);
+        ui.label(RichText::new(title).size(16.0));
+        if !detail.is_empty() {
+            ui.add(egui::Label::new(RichText::new(detail).weak()).wrap());
+        }
+        ui.add_space(8.0);
+        action(ui)
+    })
+    .inner
+}
 
 pub fn human(n: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
@@ -62,21 +123,40 @@ impl App {
                 .default_size(300.0)
                 .show(ui, |ui| self.props_panel(ui));
         }
-        egui::CentralPanel::default_margins().show(ui, |ui| {
-            if self.bucket.is_none() {
-                ui.centered_and_justified(|ui| {
-                    let msg = if self.profiles.is_empty() {
-                        "Add a connection to get started"
+        egui::CentralPanel::default_margins()
+            .frame(egui::Frame::central_panel(ui.style()).fill(CONTENT))
+            .show(ui, |ui| {
+                if self.bucket.is_none() {
+                    let bucket = RichText::new(icons::BUCKET).weak();
+                    if self.profiles.is_empty() {
+                        let detail =
+                            "Any S3-compatible storage works, like AWS, Cloudflare R2 or MinIO.";
+                        if empty_state(
+                            ui,
+                            bucket,
+                            "Add a connection to get started",
+                            detail,
+                            |ui| ui.add(primary("Add connection")).clicked(),
+                        ) {
+                            self.new_profile();
+                        }
+                    } else if let Some(e) = self.buckets_err.clone() {
+                        let icon = RichText::new(icons::WARNING).color(RED);
+                        if empty_state(ui, icon, "Couldn't load buckets", &e, |ui| {
+                            ui.button("Retry").clicked()
+                        }) {
+                            self.refresh_buckets();
+                        }
+                    } else if self.profile.is_none() {
+                        empty_state(ui, bucket, "Select a connection", "", |_| ());
                     } else {
-                        "Select a bucket"
-                    };
-                    ui.label(RichText::new(msg).weak().size(16.0));
-                });
-                return;
-            }
-            self.toolbar(ui);
-            self.table(ui);
-        });
+                        empty_state(ui, bucket, "Select a bucket", "", |_| ());
+                    }
+                    return;
+                }
+                self.toolbar(ui);
+                self.table(ui);
+            });
 
         self.dialogs(&ctx);
         self.drag_and_drop(&ctx);

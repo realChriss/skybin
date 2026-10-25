@@ -1,6 +1,6 @@
-use super::{ACCENT, RED};
+use super::{RED, RED_FILL, count, ghost, primary};
 use crate::app::{App, Dialog};
-use eframe::egui::{self, Color32, Id, Key, RichText};
+use eframe::egui::{self, Id, Key, RichText};
 
 impl App {
     pub(crate) fn dialogs(&mut self, ctx: &egui::Context) {
@@ -20,22 +20,21 @@ impl App {
             r
         };
 
-        let resp = egui::Modal::new(Id::unique("dialog")).show(ctx, |ui| {
+        let resp = egui::Modal::new(Id::unique("dialog"))
+            .frame(egui::Frame::window(&ctx.global_style()))
+            .show(ctx, |ui| {
             ui.set_width(380.0);
             // (primary label, is destructive, input valid, can delete profile)
-            let (primary, danger, valid, deletable) = match d {
+            let (label, danger, valid, deletable) = match d {
                 Dialog::Profile { idx, p } => {
                     ui.heading(if idx.is_some() {
                         "Edit connection"
                     } else {
                         "New connection"
                     });
-                    ui.add_space(8.0);
-                    egui::Grid::new("profile")
-                        .num_columns(2)
-                        .spacing([10.0, 8.0])
-                        .show(ui, |ui| {
-                            for (label, field, hint, auto) in [
+                    ui.add_space(12.0);
+                    ui.spacing_mut().item_spacing.y = 4.0;
+                    for (label, field, hint, auto) in [
                                 ("Name", &mut p.name, "My S3", true),
                                 (
                                     "Endpoint",
@@ -45,24 +44,22 @@ impl App {
                                 ),
                                 ("Region", &mut p.region, "us-east-1 / auto", false),
                                 ("Access key", &mut p.access_key, "", false),
-                            ] {
-                                let l = ui.label(label);
-                                text(ui, field, hint, auto).labelled_by(l.id);
-                                ui.end_row();
-                            }
-                            let l = ui.label("Secret key");
-                            ui.add(
-                                egui::TextEdit::singleline(&mut p.secret_key)
-                                    .password(true)
-                                    .desired_width(f32::INFINITY),
-                            )
-                            .labelled_by(l.id);
-                            ui.end_row();
-                            ui.label("");
-                            ui.checkbox(&mut p.path_style, "Path-style URLs")
-                                .on_hover_text("Needed for MinIO and most self-hosted S3");
-                            ui.end_row();
-                        });
+                    ] {
+                        let l = ui.label(label);
+                        text(ui, field, hint, auto).labelled_by(l.id);
+                        ui.add_space(8.0);
+                    }
+                    let l = ui.label("Secret key");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut p.secret_key)
+                            .password(true)
+                            .desired_width(f32::INFINITY),
+                    )
+                    .labelled_by(l.id);
+                    ui.add_space(8.0);
+                    ui.checkbox(&mut p.path_style, "Path-style URLs")
+                        .on_hover_text("Needed for MinIO and most self-hosted S3");
+                    ui.add_space(4.0);
                     ui.label(
                         RichText::new(
                             "Keys are encrypted for your user account when the system supports it.",
@@ -88,7 +85,7 @@ impl App {
                     ui.heading("Public URL");
                     ui.label(
                         RichText::new(format!(
-                            "Domain or CDN that serves “{bucket}” publicly. Empty = none."
+                            "Domain or CDN that serves “{bucket}” publicly. Leave empty if it isn't public."
                         ))
                         .small()
                         .weak(),
@@ -109,7 +106,7 @@ impl App {
                 Dialog::Rename { from, to } => {
                     ui.heading("Rename / move");
                     ui.label(
-                        RichText::new("Full key — change the path to move it.")
+                        RichText::new("This is the full key. Change the path to move it.")
                             .small()
                             .weak(),
                     );
@@ -121,8 +118,8 @@ impl App {
                 Dialog::Delete(entries) => {
                     ui.heading("Delete");
                     ui.label(format!(
-                        "Delete {} item(s)? This cannot be undone.",
-                        entries.len()
+                        "Delete {}? This cannot be undone.",
+                        count(entries.len(), "item")
                     ));
                     for e in entries.iter().take(8) {
                         ui.label(RichText::new(format!("• {}", e.name)).weak());
@@ -136,21 +133,24 @@ impl App {
                     ("Delete", true, true, false)
                 }
             };
-            ui.add_space(12.0);
+            ui.add_space(16.0);
             egui::Sides::new().show(
                 ui,
                 |ui| {
                     if deletable
                         && ui
-                            .button(RichText::new("Delete connection").color(RED))
+                            .add(ghost(RichText::new("Delete connection").color(RED)))
                             .clicked()
                     {
                         delete_profile = true;
                     }
                 },
                 |ui| {
-                    let btn = egui::Button::new(RichText::new(primary).color(Color32::WHITE))
-                        .fill(if danger { RED } else { ACCENT });
+                    let btn = if danger {
+                        primary(label).fill(RED_FILL)
+                    } else {
+                        primary(label)
+                    };
                     if ui.add_enabled(valid, btn).clicked()
                         || (valid && ui.input(|i| i.key_pressed(Key::Enter)))
                     {

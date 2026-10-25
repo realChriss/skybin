@@ -1,10 +1,10 @@
-use super::icons;
+use super::{ghost, icons};
 use crate::app::{App, Dialog};
 use crate::backend::Profile;
 use eframe::egui::{self, Align, Layout, RichText};
 
 impl App {
-    fn new_profile(&mut self) {
+    pub(crate) fn new_profile(&mut self) {
         self.open_dialog(Dialog::Profile {
             idx: None,
             p: Profile {
@@ -15,7 +15,7 @@ impl App {
     }
 
     pub(crate) fn sidebar(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
+        ui.add_space(8.0);
         let heading = ui.label(RichText::new("CONNECTION").small().weak());
         let name = self
             .cur_profile()
@@ -25,15 +25,16 @@ impl App {
         // sizing from `available_width()` in a resizable panel otherwise makes it grow every frame.
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
                 if ui
-                    .button(icons::PLUS)
+                    .add(ghost(icons::PLUS))
                     .on_hover_text("New connection")
                     .clicked()
                 {
                     self.new_profile();
                 }
                 if ui
-                    .button(icons::EDIT)
+                    .add_enabled(self.profile.is_some(), ghost(icons::EDIT))
                     .on_hover_text("Edit connection")
                     .clicked()
                     && let Some(i) = self.profile
@@ -64,20 +65,21 @@ impl App {
             });
         });
 
-        ui.add_space(10.0);
+        ui.add_space(14.0);
         ui.horizontal(|ui| {
             ui.label(RichText::new("BUCKETS").small().weak());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                ui.spacing_mut().item_spacing.x = 2.0;
                 let on = self.profile.is_some();
                 if ui
-                    .add_enabled(on, egui::Button::new(icons::REFRESH).small())
+                    .add_enabled(on, ghost(icons::REFRESH).small())
                     .on_hover_text("Refresh buckets")
                     .clicked()
                 {
                     self.refresh_buckets();
                 }
                 if ui
-                    .add_enabled(on, egui::Button::new(icons::PLUS).small())
+                    .add_enabled(on, ghost(icons::PLUS).small())
                     .on_hover_text("Create bucket")
                     .clicked()
                 {
@@ -85,16 +87,24 @@ impl App {
                 }
             });
         });
-        ui.separator();
+        ui.add_space(2.0);
 
         if self.profiles.is_empty() {
-            ui.add_space(20.0);
-            ui.vertical_centered(|ui| {
-                ui.label(RichText::new("No connections yet").weak());
-                if ui.button("Add connection").clicked() {
-                    self.new_profile();
-                }
-            });
+            return;
+        }
+
+        if self.buckets.is_empty() && self.profile.is_some() {
+            if self.loading_buckets {
+                super::skeleton(ui, 4, &[]);
+            } else if self.buckets_err.is_none() {
+                ui.add_space(20.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new("No buckets yet").weak());
+                    if ui.button("Create bucket").clicked() {
+                        self.open_dialog(Dialog::NewBucket(String::new()));
+                    }
+                });
+            }
             return;
         }
 
@@ -105,6 +115,8 @@ impl App {
             .auto_shrink(false)
             .show(ui, |ui| {
                 ui.with_layout(Layout::top_down_justified(Align::LEFT), |ui| {
+                    ui.spacing_mut().button_padding.y = 6.0;
+                    ui.spacing_mut().item_spacing.y = 2.0;
                     for b in &self.buckets {
                         let sel = self.bucket.as_ref() == Some(b);
                         let r = ui.selectable_label(sel, format!("{}  {b}", icons::BUCKET));
