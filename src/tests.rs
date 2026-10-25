@@ -288,3 +288,36 @@ fn deleting_the_open_bucket_closes_it() {
     });
     assert!(app.bucket.is_none() && app.prefix.is_empty() && app.props.is_none());
 }
+
+/// egui's bundled fonts, without the system ones, must draw every symbol the app itself shows.
+#[test]
+fn every_symbol_in_the_ui_has_a_glyph() {
+    let ctx = harness(App::new(vec![], None)).ctx.clone();
+    let font = egui::FontId::proportional(14.0);
+    let mut missing = std::collections::BTreeSet::new();
+    for dir in ["src", "src/ui"] {
+        for f in std::fs::read_dir(dir).unwrap() {
+            let path = f.unwrap().path();
+            if path.extension().is_some_and(|e| e == "rs") && !path.ends_with("tests.rs") {
+                for c in std::fs::read_to_string(&path).unwrap().chars() {
+                    if !c.is_ascii() && !ctx.fonts_mut(|f| f.has_glyph(&font, c)) {
+                        missing.insert(c);
+                    }
+                }
+            }
+        }
+    }
+    assert!(missing.is_empty(), "{missing:?}");
+}
+
+#[cfg(windows)]
+#[test]
+fn system_fonts_draw_other_scripts() {
+    let mut h = harness(App::new(vec![], None));
+    crate::ui::theme::system_fonts(&h.ctx);
+    h.run();
+    let font = egui::FontId::proportional(14.0);
+    for c in ['中', 'あ', '한', 'ع', '✓'] {
+        assert!(h.ctx.fonts_mut(|f| f.has_glyph(&font, c)), "{c}");
+    }
+}

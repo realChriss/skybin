@@ -18,7 +18,7 @@ pub struct Profile {
     #[serde(with = "crate::secret")]
     pub secret_key: String,
     pub path_style: bool,
-    /// Bucket → public base URL (bucket website, CDN or custom domain).
+    /// Public base URL per bucket (bucket website, CDN or custom domain).
     #[serde(default)]
     pub public_urls: HashMap<String, String>,
 }
@@ -276,7 +276,7 @@ pub async fn download(b: &Bucket, jobs: Vec<(String, PathBuf)>, report: Report<'
     Ok(format!("Downloaded {n} file(s)"))
 }
 
-/// Keeps the slashes. Also used for the copy-source header, which rust-s3 passes through verbatim.
+/// URL-encodes all but the slashes. The copy-source header needs it too: rust-s3 passes it through verbatim.
 fn encode(key: &str) -> String {
     key.bytes()
         .map(|c| match c {

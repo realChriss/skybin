@@ -251,7 +251,7 @@ impl App {
                 Msg::Updated(tag, r) => match r {
                     Ok(()) => {
                         self.update_line =
-                            Some(format!("✓ Updated to {tag}. Restart Skybin to use it."))
+                            Some(format!("✔ Updated to {tag}. Restart Skybin to use it."))
                     }
                     Err(e) => {
                         self.update_line = None;

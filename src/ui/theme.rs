@@ -1,5 +1,52 @@
 use super::ACCENT;
-use eframe::egui::{self, Color32, Theme, vec2};
+use eframe::egui::{self, Color32, FontData, FontDefinitions, Theme, vec2};
+use std::sync::Arc;
+
+/// egui only bundles Latin, Greek, Cyrillic and common emoji, but keys can be in any script.
+// ponytail: fixed paths per OS; ask fontconfig if a Linux distro keeps its fonts elsewhere
+const SYSTEM_FONTS: &[&str] = if cfg!(windows) {
+    &[
+        "C:/Windows/Fonts/seguisym.ttf",
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/malgun.ttf",
+        "C:/Windows/Fonts/tahoma.ttf",
+        "C:/Windows/Fonts/Nirmala.ttc",
+    ]
+} else if cfg!(target_os = "macos") {
+    &[
+        "/System/Library/Fonts/Apple Symbols.ttf",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/AppleSDGothicNeo.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+    ]
+} else {
+    &[
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+    ]
+};
+
+/// Adds the system's fonts after egui's own, so they only draw what those lack.
+pub fn system_fonts(ctx: &egui::Context) {
+    let mut fonts = FontDefinitions::default();
+    for path in SYSTEM_FONTS {
+        let Ok(data) = std::fs::read(path) else {
+            continue;
+        };
+        let name = path.to_string();
+        fonts
+            .font_data
+            .insert(name.clone(), Arc::new(FontData::from_owned(data)));
+        for family in fonts.families.values_mut() {
+            family.push(name.clone());
+        }
+    }
+    ctx.set_fonts(fonts);
+}
 
 pub fn apply(ctx: &egui::Context) {
     ctx.set_theme(Theme::Dark);
