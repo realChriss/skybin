@@ -14,11 +14,12 @@ fn main() -> eframe::Result {
         .with_title("Skybin")
         .with_inner_size([1100.0, 700.0])
         .with_min_inner_size([720.0, 420.0]);
-    // on macOS the Dock shows the .app bundle's icon, which this would override
     #[cfg(not(target_os = "macos"))]
     let viewport = viewport.with_icon(
         eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")).unwrap(),
     );
+    #[cfg(target_os = "macos")]
+    let viewport = viewport.with_icon(eframe::egui::IconData::default());
     let options = eframe::NativeOptions {
         viewport,
         ..Default::default()
