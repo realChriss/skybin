@@ -57,13 +57,14 @@ printf '    - tag %s and push it, which builds and publishes the binaries\n' "$t
 
 # declining is an answer, not a failure
 read -rp $'\n'"  Release $tag? [y/N]: " confirm
-if [[ ${confirm,,} != y ]]; then
+if [[ $confirm != [yY] ]]; then
   printf '\n  Nothing was pushed.\n\n'
   exit 0
 fi
 
 if $bump; then
-  sed -i "0,/^version = \".*\"/s//version = \"$version\"/" Cargo.toml
+  awk -v v="$version" '!done && /^version = "/ { $0 = "version = \"" v "\""; done = 1 } 1' \
+    Cargo.toml >Cargo.toml.tmp && mv Cargo.toml.tmp Cargo.toml
   cargo update --workspace --offline --quiet
   git add Cargo.toml Cargo.lock
   git commit --quiet -m "Set the version to $version"
