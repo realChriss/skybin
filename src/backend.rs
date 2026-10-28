@@ -80,6 +80,9 @@ pub fn nice_err(e: &(dyn std::error::Error + Send + Sync)) -> String {
     let s = e.to_string();
     match (s.find("<Message>"), s.find("</Message>")) {
         (Some(a), Some(b)) if a < b => s[a + 9..b].to_string(),
+        _ if s.contains("missing field `Name`") => {
+            "The server doesn't support virtual-hosted URLs. Enable \"Path-style URLs\" for this connection.".into()
+        }
         _ => s.chars().take(300).collect(),
     }
 }
@@ -454,6 +457,12 @@ mod tests {
             bare.public_url("b", "x.mp4").as_deref(),
             Some("https://cdn.example.com/x.mp4")
         );
+    }
+
+    #[test]
+    fn nice_err_hints_at_path_style() {
+        let e: Box<dyn std::error::Error + Send + Sync> = "serde xml: missing field `Name`".into();
+        assert!(nice_err(&*e).contains("Path-style URLs"));
     }
 
     /// Full round-trip against a real S3-compatible server; skipped by default. E.g. with MinIO:
