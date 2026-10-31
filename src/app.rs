@@ -90,6 +90,7 @@ pub struct App {
     pub(crate) sort: (Sort, bool),
     pub(crate) props: Option<(String, Props)>,
     pub(crate) preview: Option<(String, Preview)>,
+    pub(crate) cache: Option<PathBuf>,
 
     pub(crate) dialog: Option<Dialog>,
     pub(crate) focus_dialog: bool,
@@ -124,6 +125,7 @@ impl App {
             sort: (Sort::Name, true),
             props: None,
             preview: None,
+            cache: None,
             dialog: None,
             focus_dialog: false,
             busy: 0,
@@ -363,20 +365,23 @@ impl App {
         let Some(kind) = media::kind(&key) else {
             return;
         };
-        let size = self
-            .entries
-            .iter()
-            .find(|e| e.key == key)
-            .map_or(0, |e| e.size);
+        let entry = self.entries.iter().find(|e| e.key == key).cloned();
+        let size = entry.as_ref().map_or(0, |e| e.size);
         if size > media::MAX_PREVIEW {
             let note = format!("Too large to preview here ({}).", crate::ui::human(size));
             self.preview = Some((key, Preview::Note(note)));
             return;
         }
         let Some(b) = self.cur_bucket() else { return };
+        let cached = self
+            .cache
+            .as_ref()
+            .zip(entry)
+            .map(|(dir, e)| backend::cache_path(dir, &b, &e));
         self.preview = Some((key.clone(), Preview::Loading));
         self.spawn(async move {
-            let r = backend::nice(backend::fetch(&b, &key).await).and_then(|data| {
+            let data = backend::fetch(&b, &key, cached.as_deref()).await;
+            let r = backend::nice(data).and_then(|data| {
                 if kind == Kind::Video {
                     media::open_video(&key, data).map(Fetched::Video)
                 } else {

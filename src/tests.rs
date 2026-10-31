@@ -23,6 +23,7 @@ fn file(name: &str, size: u64, modified: &str) -> Entry {
         name: name.into(),
         size,
         modified: modified.into(),
+        etag: String::new(),
         is_dir: false,
     }
 }
@@ -39,6 +40,7 @@ fn browsing() -> App {
             name: "2024".into(),
             size: 0,
             modified: String::new(),
+            etag: String::new(),
             is_dir: true,
         },
         file("a.txt", 10, "2024-06-01T09:30:00.000Z"),

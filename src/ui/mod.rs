@@ -95,6 +95,12 @@ impl eframe::App for App {
         eframe::set_value(storage, "profiles", &self.profiles);
         eframe::set_value(storage, "profile", &self.profile);
     }
+
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
+        if let Some(dir) = &self.cache {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }
 }
 
 impl App {
