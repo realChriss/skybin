@@ -11,6 +11,8 @@ A fast desktop app for managing your S3 buckets.
 
 </div>
 
+![Skybin browsing a bucket, with an image preview and object details in the side panel](assets/screenshot.png)
+
 ## Features
 
 - **Saved connections**: store as many accounts as you like (endpoint, region, keys, path-style) and switch between them in one click
