@@ -35,7 +35,9 @@ fn main() -> eframe::Result {
                 .and_then(|s| eframe::get_value(s, "profiles"))
                 .unwrap_or_default();
             let profile = cc.storage.and_then(|s| eframe::get_value(s, "profile"));
-            Ok(Box::new(app::App::new(profiles, profile)))
+            let mut app = app::App::new(profiles, profile);
+            app.cache = backend::open_cache();
+            Ok(Box::new(app))
         }),
     )
 }

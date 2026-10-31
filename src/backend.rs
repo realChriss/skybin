@@ -3,7 +3,10 @@ use s3::serde_types::ObjectIdentifier;
 use s3::{Bucket, BucketConfiguration, Region};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 pub type Res<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 pub type Report<'a> = &'a (dyn Fn(String) + Send + Sync);
@@ -69,6 +72,7 @@ pub struct Entry {
     pub name: String,
     pub size: u64,
     pub modified: String,
+    pub etag: String,
     pub is_dir: bool,
 }
 
@@ -129,6 +133,7 @@ pub async fn list_dir(b: &Bucket, prefix: &str) -> Res<Vec<Entry>> {
                 key: cp.prefix,
                 size: 0,
                 modified: String::new(),
+                etag: String::new(),
                 is_dir: true,
             });
         }
@@ -141,6 +146,7 @@ pub async fn list_dir(b: &Bucket, prefix: &str) -> Res<Vec<Entry>> {
                 key: o.key,
                 size: o.size,
                 modified: o.last_modified,
+                etag: o.e_tag.unwrap_or_default(),
                 is_dir: false,
             });
         }
@@ -324,8 +330,89 @@ pub async fn new_folder(b: &Bucket, key: String) -> Res<String> {
     Ok(format!("Created {key}"))
 }
 
-pub async fn fetch(b: &Bucket, key: &str) -> Res<Vec<u8>> {
-    Ok(b.get_object(key).await?.to_vec())
+const CACHE_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
+
+fn cache_dir() -> Option<PathBuf> {
+    let local = std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("skybin"));
+    Some(
+        local
+            .or_else(|| eframe::storage_dir("skybin"))?
+            .join("preview-cache"),
+    )
+}
+
+pub fn open_cache() -> Option<PathBuf> {
+    let dir = cache_dir()?;
+    let _ = std::fs::remove_dir_all(&dir);
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
+    builder.create(&dir).ok()?;
+    Some(dir)
+}
+
+pub fn cache_path(dir: &Path, b: &Bucket, e: &Entry) -> PathBuf {
+    let mut h = DefaultHasher::new();
+    (b.url(), &e.key, e.size, &e.modified, &e.etag).hash(&mut h);
+    dir.join(format!("{:016x}", h.finish()))
+}
+
+fn cache_get(path: &Path) -> Option<Vec<u8>> {
+    let data = std::fs::read(path).ok()?;
+    let file = std::fs::OpenOptions::new().write(true).open(path);
+    let _ = file.and_then(|f| f.set_modified(SystemTime::now()));
+    Some(data)
+}
+
+/// Never creates the folder, so a download finishing after exit's cleanup can't refill it.
+fn cache_put(path: &Path, data: &[u8]) {
+    let tmp = path.with_extension("tmp");
+    let Ok(mut f) = std::fs::File::create_new(&tmp) else {
+        return;
+    };
+    let written = f.write_all(data).is_ok();
+    drop(f);
+    if !written || std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+fn cache_trim(dir: &Path, budget: u64) {
+    let Ok(files) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<_> = files
+        .flatten()
+        .filter_map(|f| {
+            let meta = f.metadata().ok()?;
+            Some((meta.modified().ok()?, meta.len(), f.path()))
+        })
+        .collect();
+    files.sort();
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    for (_, len, path) in files {
+        if total <= budget {
+            break;
+        }
+        if std::fs::remove_file(path).is_ok() {
+            total -= len;
+        }
+    }
+}
+
+pub async fn fetch(b: &Bucket, key: &str, cached: Option<&Path>) -> Res<Vec<u8>> {
+    if let Some(data) = cached.and_then(cache_get) {
+        return Ok(data);
+    }
+    let data = b.get_object(key).await?.to_vec();
+    if let Some(path) = cached {
+        cache_put(path, &data);
+        if let Some(dir) = path.parent() {
+            cache_trim(dir, CACHE_BUDGET);
+        }
+    }
+    Ok(data)
 }
 
 /// Media types are overridden because stored ones are often wrong (e.g. `text/plain` from other
@@ -465,6 +552,52 @@ mod tests {
         assert!(nice_err(&*e).contains("Path-style URLs"));
     }
 
+    #[test]
+    fn preview_cache_serves_stored_files_and_trims_the_oldest() {
+        let dir = std::env::temp_dir().join(format!("skybin-cache-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = Profile {
+            endpoint: "http://127.0.0.1:9".into(),
+            access_key: "k".into(),
+            secret_key: "s".into(),
+            path_style: true,
+            ..Default::default()
+        };
+        let b = p.bucket("b").unwrap();
+        let mut e = Entry {
+            key: "a.png".into(),
+            name: "a.png".into(),
+            size: 5,
+            modified: "2024-05-01T10:00:00.000Z".into(),
+            etag: "one".into(),
+            is_dir: false,
+        };
+        let old = cache_path(&dir, &b, &e);
+        assert_ne!(old, cache_path(&dir, &p.bucket("c").unwrap(), &e));
+        cache_put(&old, b"hello");
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let hit = rt.block_on(fetch(&b, &e.key, Some(&old)));
+        assert_eq!(hit.unwrap(), b"hello");
+
+        e.etag = "two".into();
+        let new = cache_path(&dir, &b, &e);
+        assert_ne!(old, new);
+        assert!(rt.block_on(fetch(&b, &e.key, Some(&new))).is_err());
+        cache_put(&new, b"world");
+
+        let past = SystemTime::now() - std::time::Duration::from_secs(60);
+        let file = std::fs::OpenOptions::new().write(true).open(&old).unwrap();
+        file.set_modified(past).unwrap();
+        drop(file);
+        cache_trim(&dir, 5);
+        assert!(!old.exists() && new.exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+        cache_put(&new, b"late");
+        assert!(!dir.exists());
+    }
+
     /// Full round-trip against a real S3-compatible server; skipped by default. E.g. with MinIO:
     ///   docker run --rm -p 9000:9000 minio/minio server /data
     ///   S3_TEST_ENDPOINT=http://127.0.0.1:9000 cargo test -- --ignored
@@ -487,6 +620,7 @@ mod tests {
             name: key.trim_end_matches('/').into(),
             size: 0,
             modified: String::new(),
+            etag: String::new(),
             is_dir: true,
         };
         let names = |v: Vec<Entry>| {
