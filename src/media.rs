@@ -1,16 +1,17 @@
 use crate::backend::ext;
+use crate::stream::{self, Fill, Hold, S3Cursor, S3Reader};
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
-use filmcraft_media::{FrameRequest, SharedSource, cancel};
+use filmcraft_media::{ByteReader, FrameRequest, SharedReader, SharedSource, cancel};
 use filmcraft_time::Tick;
 use rodio::source::SeekError;
 use rodio::{
     ChannelCount, Decoder, DeviceSinkBuilder, MixerDeviceSink, Player, SampleRate, Source,
 };
-use std::io::Cursor;
+use std::io::{Read, Seek};
 use std::num::NonZero;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, TryRecvError, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -56,12 +57,26 @@ pub fn use_hardware_decoders() {
     });
 }
 
-pub fn open_video(key: &str, data: Vec<u8>) -> Result<SharedSource, String> {
-    let open = || filmcraft_media::open_bytes(key, data.into(), &filmcraft_codecs::openers());
+// formats without a streaming demuxer are read whole, so they keep the size limit
+pub fn open_video(key: &str, reader: SharedReader) -> Result<SharedSource, String> {
+    let open = || {
+        filmcraft_media::reader::open_reader_within(
+            key,
+            reader,
+            &filmcraft_codecs::reader_openers(),
+            &filmcraft_codecs::openers(),
+            MAX_PREVIEW,
+        )
+    };
     match catch_unwind(AssertUnwindSafe(open)) {
         Ok(source) => source.map_err(|e| e.to_string()),
         Err(_) => Err("the video decoder crashed on this file".into()),
     }
+}
+
+pub struct Buffering {
+    pub progress: f32,
+    pub trouble: Option<String>,
 }
 
 pub trait Playback {
@@ -70,68 +85,375 @@ pub trait Playback {
     fn total(&self) -> Option<Duration>;
     fn toggle(&mut self);
     fn seek(&mut self, to: Duration);
+    fn buffering(&self) -> Option<Buffering> {
+        None
+    }
 }
 
-// dropping the sink stops playback
-fn output() -> Result<(MixerDeviceSink, Player), String> {
+// decides how much to keep downloaded and whether playback has to wait for it
+struct Buffer {
+    reader: Arc<S3Reader>,
+    bitrate: Option<f64>,
+    // a quick look at a clip stays cheap until it is first played
+    engaged: bool,
+    starting: bool,
+    hold: Hold,
+    // times playback ran out of data, which raises what it waits for before resuming
+    stalls: u32,
+    target: u64,
+    ready: u64,
+    fill: Fill,
+}
+
+impl Buffer {
+    fn new(reader: Arc<S3Reader>, total: Option<Duration>) -> Self {
+        let bitrate = total
+            .filter(|t| !t.is_zero())
+            .map(|t| reader.len() as f64 / t.as_secs_f64());
+        Self {
+            reader,
+            bitrate,
+            engaged: false,
+            starting: false,
+            hold: Hold::Running,
+            stalls: 0,
+            target: 0,
+            ready: 0,
+            fill: Fill::default(),
+        }
+    }
+
+    // play was pressed, or a seek landed while playing
+    fn start(&mut self) {
+        self.engaged = true;
+        self.starting = true;
+    }
+
+    fn update(&mut self, wants_play: bool, remaining: Duration) -> Hold {
+        if self.engaged {
+            self.target = stream::ahead_bytes(self.bitrate, self.reader.rate(), remaining);
+            self.reader.set_ahead(self.target);
+        }
+        self.fill = self.reader.fill();
+        self.ready = stream::ready_bytes(self.bitrate, self.stalls, self.target, self.fill.to_end);
+        let starting = std::mem::take(&mut self.starting);
+        let next = if wants_play {
+            stream::hold(self.hold, starting, &self.fill, self.ready)
+        } else {
+            Hold::Running
+        };
+        if self.hold == Hold::Running && next == Hold::Buffering && !starting {
+            self.stalls += 1;
+        }
+        self.hold = next;
+        self.hold
+    }
+
+    fn status(&self) -> Option<Buffering> {
+        (self.hold == Hold::Buffering).then(|| Buffering {
+            progress: stream::progress(&self.fill, self.ready),
+            trouble: self.fill.trouble.clone(),
+        })
+    }
+}
+
+// samples handed to the audio device in one go
+const CHUNK: usize = 4096;
+// how far sound may drift from the picture before it is fed again
+const DRIFT: Duration = Duration::from_millis(250);
+// how long to wait before retrying a read the network failed
+const RETRY: Duration = Duration::from_millis(100);
+
+fn sink() -> Result<MixerDeviceSink, String> {
     let mut sink = DeviceSinkBuilder::open_default_sink().map_err(|e| e.to_string())?;
     sink.log_on_drop(false);
-    let player = Player::connect_new(sink.mixer());
-    player.pause();
-    Ok((sink, player))
+    Ok(sink)
 }
 
-fn decode(data: Arc<[u8]>, hint: &str) -> Result<Decoder<Cursor<Arc<[u8]>>>, String> {
+// decoded on its own thread, so the audio device never waits on the network or a decoder
+struct Feed {
+    rx: Receiver<Vec<f32>>,
+    cancel: Arc<AtomicBool>,
+    played: Arc<AtomicU64>,
+    rate: u32,
+    channels: u16,
+    buf: Vec<f32>,
+    i: usize,
+}
+
+impl Feed {
+    fn spawn(
+        rate: u32,
+        channels: u16,
+        mut produce: impl FnMut() -> Option<Vec<f32>> + Send + 'static,
+    ) -> Self {
+        let (tx, rx) = sync_channel(8);
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = cancel.clone();
+        let _ = std::thread::Builder::new()
+            .name("skybin-audio".into())
+            .spawn(move || {
+                while !flag.load(Ordering::Relaxed) {
+                    let next = AssertUnwindSafe(&mut produce);
+                    let chunk = cancel::with_cancel(&flag, || catch_unwind(next));
+                    let Ok(Some(chunk)) = chunk else { break };
+                    if tx.send(chunk).is_err() {
+                        break;
+                    }
+                }
+            });
+        Self {
+            rx,
+            cancel,
+            played: Arc::default(),
+            rate,
+            channels,
+            buf: Vec::new(),
+            i: 0,
+        }
+    }
+}
+
+impl Drop for Feed {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+impl Iterator for Feed {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<f32> {
+        if self.i == self.buf.len() {
+            match self.rx.try_recv() {
+                Ok(chunk) => {
+                    self.buf = chunk;
+                    self.i = 0;
+                }
+                // not decoded yet: silence that doesn't count as played
+                Err(TryRecvError::Empty) => return Some(0.0),
+                Err(TryRecvError::Disconnected) => return None,
+            }
+            if self.buf.is_empty() {
+                return Some(0.0);
+            }
+        }
+        let sample = self.buf[self.i];
+        self.i += 1;
+        if self.i.is_multiple_of(self.channels.max(1) as usize) {
+            self.played.fetch_add(1, Ordering::Relaxed);
+        }
+        Some(sample)
+    }
+}
+
+impl Source for Feed {
+    fn current_span_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> ChannelCount {
+        NonZero::new(self.channels).unwrap_or(NonZero::<u16>::MIN)
+    }
+
+    fn sample_rate(&self) -> SampleRate {
+        NonZero::new(self.rate).unwrap_or(NonZero::<u32>::MIN)
+    }
+
+    fn total_duration(&self) -> Option<Duration> {
+        None
+    }
+
+    // seeking replaces the feed
+    fn try_seek(&mut self, _: Duration) -> Result<(), SeekError> {
+        Err(SeekError::NotSupported {
+            underlying_source: "skybin feed",
+        })
+    }
+}
+
+// a feed through its own player: replacing one drops the old player, which stops it without
+// waiting on the audio thread (`Player::clear` does wait)
+struct Voice {
+    player: Player,
+    cancel: Arc<AtomicBool>,
+    played: Arc<AtomicU64>,
+    rate: u32,
+    from: Duration,
+}
+
+impl Voice {
+    fn new(sink: &MixerDeviceSink, from: Duration, feed: Feed) -> Self {
+        let player = Player::connect_new(sink.mixer());
+        player.pause();
+        let (cancel, played, rate) = (feed.cancel.clone(), feed.played.clone(), feed.rate);
+        player.append(feed);
+        Self {
+            player,
+            cancel,
+            played,
+            rate,
+            from,
+        }
+    }
+
+    fn pos(&self) -> Duration {
+        let played = self.played.load(Ordering::Relaxed) as f64;
+        self.from + Duration::from_secs_f64(played / self.rate.max(1) as f64)
+    }
+
+    fn started(&self) -> bool {
+        self.played.load(Ordering::Relaxed) > 0
+    }
+
+    fn finished(&self) -> bool {
+        self.player.empty()
+    }
+
+    fn run(&self, on: bool) {
+        if on {
+            self.player.play();
+        } else {
+            self.player.pause();
+        }
+    }
+}
+
+impl Drop for Voice {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+fn decode<R: Read + Seek + Send + Sync + 'static>(
+    data: R,
+    len: u64,
+    hint: &str,
+) -> Result<Decoder<R>, String> {
     Decoder::builder()
-        .with_byte_len(data.len() as u64)
-        .with_data(Cursor::new(data))
+        .with_byte_len(len)
+        .with_data(data)
         .with_hint(hint)
         .with_seekable(true)
         .build()
         .map_err(|e| e.to_string())
 }
 
-pub struct Audio {
-    _sink: MixerDeviceSink,
-    player: Player,
-    data: Arc<[u8]>,
+fn decode_stream(reader: &Arc<S3Reader>, hint: &str) -> Result<Decoder<S3Cursor>, String> {
+    decode(S3Cursor::patient(reader.clone()), reader.len(), hint)
+}
+
+// probing reads from the network, so it happens before the UI thread gets it; a failed read
+// fails the open rather than waiting
+pub struct OpenAudio {
+    reader: Arc<S3Reader>,
     hint: String,
+    rate: u32,
+    channels: u16,
     total: Option<Duration>,
 }
 
+#[cfg(test)]
+impl OpenAudio {
+    pub fn total(&self) -> Option<Duration> {
+        self.total
+    }
+}
+
+pub fn open_audio(key: &str, reader: Arc<S3Reader>) -> Result<OpenAudio, String> {
+    let hint = ext(key);
+    let probe = decode(S3Cursor::new(reader.clone()), reader.len(), &hint)?;
+    Ok(OpenAudio {
+        rate: probe.sample_rate().get(),
+        channels: probe.channels().get(),
+        total: probe.total_duration(),
+        reader,
+        hint,
+    })
+}
+
+// the decoder is made on the feed's own thread, so the UI never waits on the network
+fn decoder_feed(
+    reader: Arc<S3Reader>,
+    hint: String,
+    from: Duration,
+    rate: u32,
+    channels: u16,
+) -> Feed {
+    let mut decoder = None;
+    Feed::spawn(rate, channels, move || {
+        if decoder.is_none() {
+            let mut d = decode_stream(&reader, &hint).ok()?;
+            if !from.is_zero() {
+                d.try_seek(from).ok()?;
+            }
+            decoder = Some(d);
+        }
+        let d = decoder.as_mut()?;
+        let chunk: Vec<f32> = d.by_ref().take(CHUNK * channels as usize).collect();
+        (!chunk.is_empty()).then_some(chunk)
+    })
+}
+
+pub struct Audio {
+    sink: MixerDeviceSink,
+    reader: Arc<S3Reader>,
+    hint: String,
+    rate: u32,
+    channels: u16,
+    total: Option<Duration>,
+    voice: Voice,
+    wants_play: bool,
+    buffer: Buffer,
+}
+
 impl Audio {
-    pub fn new(key: &str, data: Vec<u8>) -> Result<Self, String> {
-        let (sink, player) = output()?;
-        let mut audio = Self {
-            _sink: sink,
-            player,
-            data: data.into(),
-            hint: ext(key),
-            total: None,
-        };
-        audio.total = audio.load()?;
-        Ok(audio)
+    pub fn new(open: OpenAudio) -> Result<Self, String> {
+        let sink = sink()?;
+        let OpenAudio {
+            reader,
+            hint,
+            rate,
+            channels,
+            total,
+        } = open;
+        let feed = decoder_feed(reader.clone(), hint.clone(), Duration::ZERO, rate, channels);
+        Ok(Self {
+            voice: Voice::new(&sink, Duration::ZERO, feed),
+            sink,
+            buffer: Buffer::new(reader.clone(), total),
+            reader,
+            hint,
+            rate,
+            channels,
+            total,
+            wants_play: false,
+        })
     }
 
-    fn load(&self) -> Result<Option<Duration>, String> {
-        let source = decode(self.data.clone(), &self.hint)?;
-        let total = source.total_duration();
-        self.player.append(source);
-        Ok(total)
+    pub fn update(&mut self, ctx: &egui::Context) {
+        if self.wants_play && self.voice.finished() {
+            self.wants_play = false;
+        }
+        let remaining = self
+            .total
+            .map_or(Duration::ZERO, |t| t.saturating_sub(self.pos()));
+        let hold = self.buffer.update(self.wants_play, remaining);
+        self.voice.run(self.wants_play && hold == Hold::Running);
+        if self.wants_play {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
     }
 }
 
 impl Playback for Audio {
     fn playing(&self) -> bool {
-        !self.player.empty() && !self.player.is_paused()
+        self.wants_play
     }
 
     fn pos(&self) -> Duration {
-        if self.player.empty() {
-            Duration::ZERO
-        } else {
-            self.player.get_pos()
-        }
+        let pos = self.voice.pos();
+        self.total.map_or(pos, |t| pos.min(t))
     }
 
     fn total(&self) -> Option<Duration> {
@@ -139,23 +461,36 @@ impl Playback for Audio {
     }
 
     fn toggle(&mut self) {
-        if self.playing() {
-            self.player.pause();
-        } else {
-            // rodio drops a finished track from the queue
-            if self.player.empty() {
-                let _ = self.load();
-            }
-            self.player.play();
+        if self.wants_play {
+            self.wants_play = false;
+            self.voice.run(false);
+            return;
         }
+        if self.voice.finished() {
+            self.seek(Duration::ZERO);
+        }
+        self.wants_play = true;
+        self.buffer.start();
     }
 
     fn seek(&mut self, to: Duration) {
-        if self.player.empty() {
-            self.player.pause();
-            let _ = self.load();
+        let to = self.total.map_or(to, |t| to.min(t));
+        self.reader.jumped();
+        let feed = decoder_feed(
+            self.reader.clone(),
+            self.hint.clone(),
+            to,
+            self.rate,
+            self.channels,
+        );
+        self.voice = Voice::new(&self.sink, to, feed);
+        if self.wants_play {
+            self.buffer.start();
         }
-        let _ = self.player.try_seek(to);
+    }
+
+    fn buffering(&self) -> Option<Buffering> {
+        self.buffer.status()
     }
 }
 
@@ -193,104 +528,29 @@ fn read(clock: &SharedClock) -> Clock {
     clock.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
-struct Track {
-    source: SharedSource,
-    rate: u32,
-    channels: u16,
-    next: i64,
-    end: i64,
-    buf: Vec<f32>,
-    i: usize,
-}
-
-impl Track {
-    fn new(
-        source: SharedSource,
-        rate: u32,
-        channels: u16,
-        from: Duration,
-        total: Duration,
-    ) -> Self {
-        Self {
-            next: (from.as_secs_f64() * rate as f64) as i64,
-            end: (total.as_secs_f64() * rate as f64).ceil() as i64,
-            source,
-            rate,
-            channels,
-            buf: Vec::new(),
-            i: 0,
+fn interleave(chunk: &filmcraft_frame::AudioBuffer, channels: u16) -> Vec<f32> {
+    let mut out = Vec::with_capacity(chunk.frames() * channels as usize);
+    for f in 0..chunk.frames() {
+        for c in 0..channels as usize {
+            let ch = chunk.channels.get(c).or(chunk.channels.first());
+            out.push(ch.map_or(0.0, |ch| ch[f]));
         }
     }
-}
-
-impl Iterator for Track {
-    type Item = f32;
-
-    fn next(&mut self) -> Option<f32> {
-        if self.i == self.buf.len() {
-            let n = (self.end - self.next).min(4096);
-            if n <= 0 {
-                return None;
-            }
-            // a panic on the audio device thread aborts the app
-            let source = &self.source;
-            let (next, rate) = (self.next, self.rate);
-            let decode = AssertUnwindSafe(|| source.audio(next, n as usize, rate));
-            let chunk = catch_unwind(decode).ok()?.ok()?;
-            self.next += n;
-            self.buf.clear();
-            self.i = 0;
-            for f in 0..chunk.frames() {
-                for c in 0..self.channels as usize {
-                    let ch = chunk.channels.get(c).or(chunk.channels.first());
-                    self.buf.push(ch.map_or(0.0, |ch| ch[f]));
-                }
-            }
-            if self.buf.is_empty() {
-                return None;
-            }
-        }
-        self.i += 1;
-        Some(self.buf[self.i - 1])
-    }
-}
-
-impl Source for Track {
-    fn current_span_len(&self) -> Option<usize> {
-        None
-    }
-
-    fn channels(&self) -> ChannelCount {
-        NonZero::new(self.channels).unwrap_or(NonZero::<u16>::MIN)
-    }
-
-    fn sample_rate(&self) -> SampleRate {
-        NonZero::new(self.rate).unwrap_or(NonZero::<u32>::MIN)
-    }
-
-    fn total_duration(&self) -> Option<Duration> {
-        None
-    }
-
-    fn try_seek(&mut self, pos: Duration) -> Result<(), SeekError> {
-        self.next = (pos.as_secs_f64() * self.rate as f64) as i64;
-        self.buf.clear();
-        self.i = 0;
-        Ok(())
-    }
+    out
 }
 
 struct Sound {
-    _sink: MixerDeviceSink,
-    player: Player,
+    sink: MixerDeviceSink,
     rate: u32,
     channels: u16,
+    voice: Option<Voice>,
 }
 
 static OPEN_VIDEOS: AtomicUsize = AtomicUsize::new(0);
 
 pub struct Video {
     source: SharedSource,
+    reader: Arc<S3Reader>,
     fps: f64,
     total: Duration,
     sound: Option<Sound>,
@@ -299,10 +559,16 @@ pub struct Video {
     next: Option<(Duration, ColorImage)>,
     texture: Option<TextureHandle>,
     ctx: egui::Context,
+    wants_play: bool,
+    buffer: Buffer,
 }
 
 impl Video {
-    pub fn new(source: SharedSource, ctx: &egui::Context) -> Result<Self, String> {
+    pub fn new(
+        source: SharedSource,
+        reader: Arc<S3Reader>,
+        ctx: &egui::Context,
+    ) -> Result<Self, String> {
         let info = source.info();
         let v = info.video.as_ref().ok_or("the file has no video track")?;
         let fps = v.frame_rate.num as f64 / v.frame_rate.den.max(1) as f64;
@@ -310,34 +576,21 @@ impl Video {
         let total = Duration::from_secs_f64(info.duration.seconds().max(0.0));
         let sound = info.audio_streams.first().and_then(|a| {
             let channels = u16::try_from(a.channels).ok().filter(|&c| c > 0)?;
-            let (sink, player) = output().ok()?;
-            let rate = a.sample_rate;
-            player.append(Track::new(
-                source.clone(),
-                rate,
-                channels,
-                Duration::ZERO,
-                total,
-            ));
+            let rate = Some(a.sample_rate).filter(|&r| r > 0)?;
             Some(Sound {
-                _sink: sink,
-                player,
+                sink: sink().ok()?,
                 rate,
                 channels,
+                voice: None,
             })
         });
         let clock = SharedClock::default();
         OPEN_VIDEOS.fetch_add(1, Ordering::Relaxed);
-        Ok(Self {
-            frames: decode_frames(
-                source.clone(),
-                Duration::ZERO,
-                fps,
-                total,
-                clock.clone(),
-                ctx.clone(),
-            ),
+        let mut video = Self {
+            frames: Frames::idle(),
+            buffer: Buffer::new(reader.clone(), Some(total)),
             source,
+            reader,
             fps,
             total,
             sound,
@@ -345,13 +598,38 @@ impl Video {
             next: None,
             texture: None,
             ctx: ctx.clone(),
-        })
+            wants_play: false,
+        };
+        video.frames = video.decode_from(Duration::ZERO);
+        Ok(video)
     }
 
     pub fn update(&mut self) {
-        if self.playing() && self.now() >= self.total {
-            self.pause();
+        if self.wants_play && self.now() >= self.total {
+            self.wants_play = false;
         }
+        let remaining = self.total.saturating_sub(self.pos());
+        let hold = self.buffer.update(self.wants_play, remaining);
+        let run = self.wants_play && hold == Hold::Running;
+        match (run, self.running()) {
+            (true, false) => self.run(),
+            (false, true) => self.halt(),
+            (true, true) => self.keep_in_sync(),
+            (false, false) => {}
+        }
+        self.show_due_frame();
+        if self.wants_play {
+            let frame = Duration::from_secs_f64(1.0 / self.fps);
+            self.ctx
+                .request_repaint_after(frame.min(Duration::from_millis(100)));
+        }
+    }
+
+    pub fn texture(&self) -> Option<&TextureHandle> {
+        self.texture.as_ref()
+    }
+
+    fn show_due_frame(&mut self) {
         let now = self.pos();
         let mut due = None;
         loop {
@@ -379,45 +657,96 @@ impl Video {
                 }
             }
         }
-        if self.playing() {
-            self.ctx
-                .request_repaint_after(Duration::from_secs_f64(1.0 / self.fps));
-        }
-    }
-
-    pub fn texture(&self) -> Option<&TextureHandle> {
-        self.texture.as_ref()
     }
 
     fn now(&self) -> Duration {
         read(&self.clock).now()
     }
 
+    fn running(&self) -> bool {
+        read(&self.clock).since.is_some()
+    }
+
     fn clock(&self) -> std::sync::MutexGuard<'_, Clock> {
         self.clock.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn pause(&mut self) {
-        self.clock().pause();
-        if let Some(s) = &self.sound {
-            s.player.pause();
+    // sound restarts at the clock, which also undoes any drift from a stall
+    fn run(&mut self) {
+        self.feed_sound(self.pos());
+        self.clock().play();
+        if let Some(v) = self.sound.as_ref().and_then(|s| s.voice.as_ref()) {
+            v.run(true);
         }
     }
 
-    fn sync_sound(&self, at: Duration) {
-        let Some(s) = &self.sound else { return };
-        if s.player.empty() {
-            let track = Track::new(self.source.clone(), s.rate, s.channels, at, self.total);
-            s.player.append(track);
-        } else {
-            let _ = s.player.try_seek(at);
+    fn halt(&mut self) {
+        self.clock().pause();
+        if let Some(v) = self.sound.as_ref().and_then(|s| s.voice.as_ref()) {
+            v.run(false);
         }
+    }
+
+    fn keep_in_sync(&mut self) {
+        let now = self.now();
+        let drifted = self
+            .sound
+            .as_ref()
+            .and_then(|s| s.voice.as_ref())
+            .is_some_and(|v| v.started() && !v.finished() && v.pos().abs_diff(now) > DRIFT);
+        if drifted {
+            self.run();
+        }
+    }
+
+    fn feed_sound(&mut self, from: Duration) {
+        let Some(s) = &mut self.sound else { return };
+        let (source, reader) = (self.source.clone(), self.reader.clone());
+        let (rate, channels) = (s.rate, s.channels);
+        let mut next = (from.as_secs_f64() * rate as f64) as i64;
+        let end = (self.total.as_secs_f64() * rate as f64).ceil() as i64;
+        let feed = Feed::spawn(rate, channels, move || {
+            loop {
+                let n = (end - next).min(CHUNK as i64);
+                if n <= 0 {
+                    return None;
+                }
+                match source.audio(next, n as usize, rate) {
+                    Ok(chunk) if chunk.frames() == 0 => return None,
+                    Ok(chunk) => {
+                        next += n;
+                        return Some(interleave(&chunk, channels));
+                    }
+                    Err(_) if cancel::cancelled() => return None,
+                    Err(_) if reader.troubled() => std::thread::sleep(RETRY),
+                    // undecodable: skip it rather than stop the sound
+                    Err(_) => {
+                        next += n;
+                        return Some(vec![0.0; n as usize * channels as usize]);
+                    }
+                }
+            }
+        });
+        s.voice = Some(Voice::new(&s.sink, from, feed));
+    }
+
+    fn decode_from(&self, from: Duration) -> Frames {
+        let reader = self.reader.clone();
+        decode_frames(
+            self.source.clone(),
+            from,
+            self.fps,
+            self.total,
+            self.clock.clone(),
+            self.ctx.clone(),
+            move || reader.troubled(),
+        )
     }
 }
 
 impl Playback for Video {
     fn playing(&self) -> bool {
-        read(&self.clock).since.is_some()
+        self.wants_play
     }
 
     fn pos(&self) -> Duration {
@@ -429,34 +758,37 @@ impl Playback for Video {
     }
 
     fn toggle(&mut self) {
-        if self.playing() {
-            self.pause();
+        if self.wants_play {
+            self.wants_play = false;
+            self.halt();
             return;
         }
         if self.pos() >= self.total {
             self.seek(Duration::ZERO);
         }
-        self.sync_sound(self.pos());
-        self.clock().play();
-        if let Some(s) = &self.sound {
-            s.player.play();
-        }
+        self.wants_play = true;
+        self.buffer.start();
     }
 
     fn seek(&mut self, to: Duration) {
         let to = to.min(self.total);
+        self.halt();
+        // its thread would keep reading at the old spot and pull the download window back
+        if let Some(s) = &mut self.sound {
+            s.voice = None;
+        }
         self.clock().set(to);
+        self.reader.jumped();
         // dropping the old Frames cancels its in-flight decode
-        self.frames = decode_frames(
-            self.source.clone(),
-            to,
-            self.fps,
-            self.total,
-            self.clock.clone(),
-            self.ctx.clone(),
-        );
+        self.frames = self.decode_from(to);
         self.next = None;
-        self.sync_sound(to);
+        if self.wants_play {
+            self.buffer.start();
+        }
+    }
+
+    fn buffering(&self) -> Option<Buffering> {
+        self.buffer.status()
     }
 }
 
@@ -485,6 +817,14 @@ struct Frames {
 }
 
 impl Frames {
+    fn idle() -> Self {
+        Self {
+            rx: sync_channel(0).1,
+            cancel: Arc::default(),
+            thread: None,
+        }
+    }
+
     fn stop(&mut self) -> Option<JoinHandle<()>> {
         self.cancel.store(true, Ordering::Relaxed);
         self.thread.take()
@@ -512,6 +852,8 @@ fn plan_frame(next: i64, fps: f64, clock: &Clock) -> (i64, Option<Tick>) {
     (i, Some(Tick::from_seconds_f64(ahead)))
 }
 
+// `trouble`: whether a failed decode was the network, which is retried, rather than bad data,
+// which is skipped
 fn decode_frames(
     source: SharedSource,
     from: Duration,
@@ -519,6 +861,7 @@ fn decode_frames(
     total: Duration,
     clock: SharedClock,
     ctx: egui::Context,
+    trouble: impl Fn() -> bool + Send + 'static,
 ) -> Frames {
     let (tx, rx) = sync_channel(4);
     let cancel = Arc::new(AtomicBool::new(false));
@@ -533,8 +876,17 @@ fn decode_frames(
             }
             let request = FrameRequest::full(Tick::from_seconds_f64(t));
             let decode = || cancel::with_catch_up(late, || source.video_frame(request));
-            let Ok(frame) = cancel::with_cancel(&flag, decode) else {
-                break;
+            let frame = match cancel::with_cancel(&flag, decode) {
+                Ok(frame) => frame,
+                Err(_) if flag.load(Ordering::Relaxed) => break,
+                Err(_) if trouble() => {
+                    std::thread::sleep(RETRY);
+                    continue;
+                }
+                Err(_) => {
+                    next = i + 1;
+                    continue;
+                }
             };
             let small = frame.box_decimated(decimation(frame.width));
             let frame = small.as_ref().unwrap_or(&frame);
@@ -557,6 +909,7 @@ fn decode_frames(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn kinds_by_extension() {
@@ -583,9 +936,10 @@ mod tests {
         wav.extend(b"data");
         wav.extend(16000u32.to_le_bytes());
         wav.resize(wav.len() + 16000, 0);
-        let source = decode(wav.into(), "wav").unwrap();
+        let len = wav.len() as u64;
+        let source = decode(Cursor::new(wav), len, "wav").unwrap();
         assert_eq!(source.total_duration(), Some(Duration::from_secs(1)));
-        assert!(decode(vec![1, 2, 3].into(), "mp3").is_err());
+        assert!(decode(Cursor::new(vec![1, 2, 3]), 3, "mp3").is_err());
 
         let png = image::load_from_memory(include_bytes!("../assets/icon.png")).unwrap();
         let mut jpeg = Cursor::new(Vec::new());
@@ -598,10 +952,11 @@ mod tests {
 
     #[test]
     fn broken_video_is_an_error() {
-        assert!(open_video("clip.mp4", b"not a video".to_vec()).is_err());
+        let mem = |b: Vec<u8>| Arc::new(filmcraft_media::reader::MemReader(b.into()));
+        assert!(open_video("clip.mp4", mem(b"not a video".to_vec())).is_err());
         let mut truncated = b"\0\0\0\x20ftypisom".to_vec();
         truncated.resize(64, 0xff);
-        assert!(open_video("clip.mp4", truncated).is_err());
+        assert!(open_video("clip.mp4", mem(truncated)).is_err());
     }
 
     #[test]
@@ -700,6 +1055,7 @@ mod tests {
             Duration::from_secs(60),
             clock,
             egui::Context::default(),
+            || false,
         );
         let wait = |what: &dyn Fn() -> bool| {
             let give_up = Instant::now() + Duration::from_secs(2);
@@ -716,6 +1072,110 @@ mod tests {
         drop(frames);
         assert!(wait(&|| stuck.cancelled.load(Ordering::Relaxed)));
         thread.unwrap().join().unwrap();
+    }
+
+    fn drain(feed: &mut Feed) -> Vec<f32> {
+        let give_up = Instant::now() + Duration::from_secs(2);
+        let mut out = Vec::new();
+        while Instant::now() < give_up {
+            match feed.next() {
+                Some(0.0) => std::thread::sleep(Duration::from_millis(1)),
+                Some(x) => out.push(x),
+                None => return out,
+            }
+        }
+        panic!("the feed never ended: {out:?}");
+    }
+
+    #[test]
+    fn a_feed_plays_chunks_in_order_and_counts_only_real_frames() {
+        let mut chunks = vec![vec![1.0, 2.0, 3.0, 4.0], vec![5.0, 6.0]].into_iter();
+        let mut feed = Feed::spawn(48_000, 2, move || chunks.next());
+        let played = feed.played.clone();
+        assert_eq!(drain(&mut feed), [1.0, 2.0, 3.0, 4.0, 5.0, 6.0]);
+        assert_eq!(played.load(Ordering::Relaxed), 3);
+    }
+
+    #[test]
+    fn a_starved_feed_plays_silence_and_dropping_it_stops_the_producer() {
+        let started = Arc::new(AtomicBool::new(false));
+        let stopped = Arc::new(AtomicBool::new(false));
+        let (b, s) = (started.clone(), stopped.clone());
+        let mut feed = Feed::spawn(48_000, 1, move || {
+            b.store(true, Ordering::Relaxed);
+            while !cancel::cancelled() {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            s.store(true, Ordering::Relaxed);
+            None
+        });
+        for _ in 0..100 {
+            assert_eq!(feed.next(), Some(0.0));
+        }
+        assert_eq!(feed.played.load(Ordering::Relaxed), 0);
+        let give_up = Instant::now() + Duration::from_secs(2);
+        while !started.load(Ordering::Relaxed) && Instant::now() < give_up {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        drop(feed);
+        while !stopped.load(Ordering::Relaxed) && Instant::now() < give_up {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(stopped.load(Ordering::Relaxed));
+    }
+
+    struct Gate {
+        data: Arc<[u8]>,
+        open: Arc<AtomicBool>,
+    }
+
+    impl stream::Fetch for Gate {
+        fn fetch(&self, start: u64, end: u64) -> crate::backend::Res<Vec<u8>> {
+            let give_up = Instant::now() + Duration::from_secs(5);
+            while !self.open.load(Ordering::Relaxed) && Instant::now() < give_up {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Ok(self.data[start as usize..end as usize].to_vec())
+        }
+    }
+
+    #[test]
+    fn playback_starts_early_and_waits_longer_after_running_dry() {
+        let block = stream::BLOCK;
+        let open = Arc::new(AtomicBool::new(true));
+        let gate = Gate {
+            data: vec![0; 30 * block as usize].into(),
+            open: open.clone(),
+        };
+        let reader = S3Reader::with_fetch(Box::new(gate), 30 * block, None);
+        let total = Duration::from_secs(30);
+        let mut buffer = Buffer::new(reader.clone(), Some(total));
+        reader.read_at(0, &mut [0; 1]).unwrap();
+        buffer.start();
+        let run_until = |buffer: &mut Buffer, want: Hold| {
+            let give_up = Instant::now() + Duration::from_secs(2);
+            while buffer.update(true, total) != want && Instant::now() < give_up {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            buffer.hold
+        };
+        assert_eq!(run_until(&mut buffer, Hold::Running), Hold::Running);
+        let first = buffer.ready;
+        assert!(first < 5 * block, "{first}");
+        assert_eq!(buffer.stalls, 0);
+
+        open.store(false, Ordering::Relaxed);
+        let r = reader.clone();
+        let read = std::thread::spawn(move || r.read_at(20 * block, &mut [0; 1]));
+        assert_eq!(run_until(&mut buffer, Hold::Buffering), Hold::Buffering);
+        assert_eq!(buffer.stalls, 1);
+        buffer.update(true, total);
+        assert_eq!(buffer.ready, 2 * first);
+
+        open.store(true, Ordering::Relaxed);
+        read.join().unwrap().unwrap();
+        assert_eq!(run_until(&mut buffer, Hold::Running), Hold::Running);
+        assert_eq!(buffer.stalls, 1);
     }
 
     #[test]

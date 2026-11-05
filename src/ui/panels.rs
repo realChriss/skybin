@@ -30,11 +30,26 @@ fn controls(ui: &mut egui::Ui, media: &mut dyn Playback) {
         let end = media.total().map_or(t, |d| d.as_secs_f32()).max(0.1);
         // right-to-left: a guessed bar width widens the resizable panel every frame
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            ui.label(
-                RichText::new(format!("{} / {total}", clock(Duration::from_secs_f32(t))))
-                    .monospace()
-                    .small(),
-            );
+            match media.buffering() {
+                Some(b) => {
+                    let text = match &b.trouble {
+                        Some(e) => format!("Retrying: {}", e.chars().take(40).collect::<String>()),
+                        None => format!("Buffering {:.0}%", b.progress * 100.0),
+                    };
+                    let label = ui.label(RichText::new(text).small().weak());
+                    if let Some(e) = b.trouble {
+                        label.on_hover_text(e);
+                    }
+                    ui.spinner();
+                }
+                None => {
+                    ui.label(
+                        RichText::new(format!("{} / {total}", clock(Duration::from_secs_f32(t))))
+                            .monospace()
+                            .small(),
+                    );
+                }
+            }
             ui.spacing_mut().slider_width = ui.available_width();
             let slider = ui.add(egui::Slider::new(&mut t, 0.0..=end).show_value(false));
             if slider.is_pointer_button_down_on() {
@@ -133,13 +148,16 @@ impl App {
         ui.add_space(8.0);
         let size = vec2(ui.available_width(), 320.0);
         match preview {
-            Preview::Loading => {
+            Preview::Loading(_) => {
                 ui.spinner();
             }
             Preview::Image(bytes) => {
                 ui.add(egui::Image::from_bytes(image_uri(key), bytes.clone()).max_size(size));
             }
-            Preview::Audio(audio) => controls(ui, audio),
+            Preview::Audio(audio) => {
+                audio.update(ui.ctx());
+                controls(ui, audio);
+            }
             Preview::Video(video) => {
                 video.update();
                 match video.texture() {

@@ -96,8 +96,8 @@ impl eframe::App for App {
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        if let Some(dir) = &self.cache {
-            let _ = std::fs::remove_dir_all(dir);
+        if let Some(cache) = &self.cache {
+            let _ = std::fs::remove_dir_all(&cache.dir);
         }
     }
 }
