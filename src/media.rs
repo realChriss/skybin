@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 pub const MAX_PREVIEW: u64 = 100 * 1024 * 1024;
 
-const MAX_FPS: f64 = 30.0;
+const MAX_FPS: f64 = 60.0;
 
 const MAX_FRAME_WIDTH: u32 = 1280;
 
