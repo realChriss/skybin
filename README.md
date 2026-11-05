@@ -7,7 +7,7 @@
 A fast desktop app for managing your S3 buckets.
 
 [![Release](https://img.shields.io/github/v/release/realChriss/skybin)](https://github.com/realChriss/skybin/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/realChriss/skybin/total)](https://github.com/realChriss/skybin/releases)
+[![Downloads](https://img.shields.io/github/downloads/realChriss/skybin/total?color=blue)](https://github.com/realChriss/skybin/releases)
 [![CI](https://github.com/realChriss/skybin/actions/workflows/ci.yml/badge.svg)](https://github.com/realChriss/skybin/actions/workflows/ci.yml)
 
 </div>
@@ -66,7 +66,7 @@ Then start it with `skybin`.
 
 ## Security
 
-Saved access keys are encrypted so only your user account can read them (DPAPI on Windows, Keychain on macOS, Secret Service on Linux). On Linux without a Secret Service keyring, they are saved unencrypted. Prefer keys with limited permissions.
+Saved access keys are encrypted so only your user account can read them (DPAPI on Windows, Secret Service on Linux, and on macOS a key file). Other programs running as you can still get at them. On Linux without a Secret Service keyring, they are saved unencrypted. Prefer keys with limited permissions.
 
 ## Contributing
 
