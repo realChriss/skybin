@@ -13,7 +13,7 @@ pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> 
     Ok(reveal(String::deserialize(d)?))
 }
 
-/// Prefixed values failed to decrypt on load; writing them back untouched keeps a locked keyring from wiping them.
+// failed to decrypt on load; written back as-is so a locked keyring can't wipe them
 fn seal(v: &str) -> String {
     if v.starts_with(PREFIX) {
         return v.to_string();

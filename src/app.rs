@@ -84,7 +84,6 @@ pub struct App {
     pub(crate) prefix: String,
     pub(crate) entries: Vec<Entry>,
     pub(crate) selected: HashSet<String>,
-    /// Key of the row a shift-click selects from.
     pub(crate) anchor: Option<String>,
     pub(crate) filter: String,
     pub(crate) sort: (Sort, bool),
@@ -146,8 +145,7 @@ impl App {
             self.check_update();
         }
         self.poll();
-        // the preview lives only as long as its properties panel; dropping it stops audio,
-        // and an image also leaves a cached texture behind
+        // dropping a preview stops audio; images also leave a cached texture
         if self.preview.as_ref().map(|p| &p.0) != self.props.as_ref().map(|p| &p.0)
             && let Some((key, Preview::Image(_))) = self.preview.take()
         {
@@ -404,7 +402,7 @@ impl App {
         }
     }
 
-    /// 7 days is the S3 maximum. Signing is local, so blocking is fine.
+    // 7 days is the S3 maximum; signing is local, so blocking is fine
     pub(crate) fn copy_url(&mut self, key: &str) {
         let Some(b) = self.cur_bucket() else { return };
         match self.rt.block_on(b.presign_get(key, 7 * 24 * 3600, None)) {

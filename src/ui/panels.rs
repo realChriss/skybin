@@ -23,14 +23,12 @@ fn controls(ui: &mut egui::Ui, media: &mut dyn Playback) {
             media.toggle();
         }
         let total = media.total().map_or_else(|| "-:--".to_string(), clock);
-        // Seeking on every frame of a held drag replays the same few milliseconds of sound,
-        // so the drag target is kept aside and only applied on release.
+        // seeking every frame of a drag replays the same few ms of sound; seek on release
         let id = ui.make_persistent_id("scrub");
         let scrub = ui.data(|d| d.get_temp::<f32>(id));
         let mut t = scrub.unwrap_or(media.pos().as_secs_f32());
         let end = media.total().map_or(t, |d| d.as_secs_f32()).max(0.1);
-        // Right-to-left so the time takes its size first and the bar fills the rest;
-        // a guessed bar width overflows the resizable panel and widens it every frame.
+        // right-to-left: a guessed bar width widens the resizable panel every frame
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
             ui.label(
                 RichText::new(format!("{} / {total}", clock(Duration::from_secs_f32(t))))
@@ -194,7 +192,6 @@ mod tests {
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
 
-    /// Always playing, so the position moves on every frame like real playback.
     #[derive(Default)]
     struct Playing {
         pos: Duration,

@@ -1,7 +1,7 @@
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily, Stroke, Theme, vec2};
 use std::sync::Arc;
 
-/// egui only bundles Latin, Greek, Cyrillic and common emoji, but keys can be in any script.
+// egui bundles only Latin, Greek, Cyrillic and emoji; keys can be in any script
 // ponytail: fixed paths per OS; ask fontconfig if a Linux distro keeps its fonts elsewhere
 const SYSTEM_FONTS: &[&str] = if cfg!(windows) {
     &[
@@ -29,8 +29,7 @@ const SYSTEM_FONTS: &[&str] = if cfg!(windows) {
     ]
 };
 
-/// Lucide goes first because egui's own icon font also uses the private use area. The system's
-/// fonts go last, so they only draw what egui's lack.
+// Lucide first: egui's icon font also uses the private use area
 pub fn fonts(ctx: &egui::Context, system: bool) {
     let mut fonts = FontDefinitions::default();
     for (name, data) in [

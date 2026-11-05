@@ -21,7 +21,6 @@ pub struct Profile {
     #[serde(with = "crate::secret")]
     pub secret_key: String,
     pub path_style: bool,
-    /// Public base URL per bucket (bucket website, CDN or custom domain).
     #[serde(default)]
     pub public_urls: HashMap<String, String>,
 }
@@ -66,9 +65,8 @@ impl Profile {
 
 #[derive(Clone)]
 pub struct Entry {
-    /// Full key; folders end with '/'.
+    // folders end with '/'
     pub key: String,
-    /// Name relative to the listed prefix.
     pub name: String,
     pub size: u64,
     pub modified: String,
@@ -285,7 +283,7 @@ pub async fn download(b: &Bucket, jobs: Vec<(String, PathBuf)>, report: Report<'
     Ok(format!("Downloaded {n} file(s)"))
 }
 
-/// URL-encodes all but the slashes. The copy-source header needs it too: rust-s3 passes it through verbatim.
+// also for the copy-source header, which rust-s3 passes through verbatim
 fn encode(key: &str) -> String {
     key.bytes()
         .map(|c| match c {
@@ -365,7 +363,7 @@ fn cache_get(path: &Path) -> Option<Vec<u8>> {
     Some(data)
 }
 
-/// Never creates the folder, so a download finishing after exit's cleanup can't refill it.
+// never creates the folder, so a download finishing after exit's cleanup can't refill it
 fn cache_put(path: &Path, data: &[u8]) {
     let tmp = path.with_extension("tmp");
     let Ok(mut f) = std::fs::File::create_new(&tmp) else {
@@ -415,8 +413,7 @@ pub async fn fetch(b: &Bucket, key: &str, cached: Option<&Path>) -> Res<Vec<u8>>
     Ok(data)
 }
 
-/// Media types are overridden because stored ones are often wrong (e.g. `text/plain` from other
-/// upload tools), which makes browsers show or download the file instead of playing it.
+// stored media types are often wrong (`text/plain`), which stops browsers playing the file
 pub async fn browser_link(b: &Bucket, key: &str) -> Res<String> {
     let queries = crate::media::kind(key).map(|_| {
         HashMap::from([
@@ -598,10 +595,8 @@ mod tests {
         assert!(!dir.exists());
     }
 
-    /// Full round-trip against a real S3-compatible server; skipped by default. E.g. with MinIO:
-    ///   docker run --rm -p 9000:9000 minio/minio server /data
-    ///   S3_TEST_ENDPOINT=http://127.0.0.1:9000 cargo test -- --ignored
-    /// Optional: S3_TEST_REGION, S3_TEST_KEY, S3_TEST_SECRET (default minioadmin), S3_TEST_PATH_STYLE=0.
+    // docker run --rm -p 9000:9000 minio/minio server /data
+    // S3_TEST_ENDPOINT=http://127.0.0.1:9000 cargo test -- --ignored
     #[test]
     #[ignore]
     fn roundtrip_against_real_s3() {
@@ -663,7 +658,7 @@ mod tests {
                 "{props:?}"
             );
 
-            // Folder move with a key that needs URL-encoding in the copy source.
+            // key needs URL-encoding in the copy source
             rename(&b, dir("src/"), "moved".into(), &report)
                 .await
                 .unwrap();

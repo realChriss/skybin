@@ -91,7 +91,7 @@ fn empty_state_add_connection() {
     endpoint.type_text("http://127.0.0.1:9");
     h.run();
     h.get_by_label("Save").click();
-    h.run_ok(); // saving kicks off a (failing, offline) bucket fetch with a spinner
+    h.run_ok(); // offline bucket fetch fails
 
     let app = h.state();
     assert!(app.dialog.is_none());
@@ -233,9 +233,9 @@ fn enter_opens_folder_and_backspace_goes_up() {
     h.get_by_label(&format!("{FOLDER}  2024")).click();
     h.run();
     h.key_press(Key::Enter);
-    h.run_ok(); // listing the folder fails offline; we only care about navigation
+    h.run_ok(); // offline listing fails
     assert_eq!(h.state().prefix, "2024/");
-    h.get_by_label("2024"); // breadcrumb
+    h.get_by_label("2024");
 
     h.key_press(Key::Backspace);
     h.run_ok();
@@ -257,8 +257,6 @@ fn bucket_context_menu_offers_delete() {
     );
 }
 
-/// Regression: sizing sidebar widgets from `available_width()` made the resizable panel grow
-/// every frame, shifting the whole layout and making clicks miss.
 #[test]
 fn layout_is_stable_between_frames() {
     let mut h = harness(browsing());
@@ -267,8 +265,6 @@ fn layout_is_stable_between_frames() {
     assert_eq!(h.get_by_value("Size").rect(), before);
 }
 
-/// Regression: a button overlaid on the image pushed the properties up over it and, being wider
-/// than its slot, widened the resizable panel on every repaint.
 #[test]
 fn image_preview_keeps_its_place() {
     let mut app = browsing();
@@ -314,7 +310,6 @@ fn deleting_the_open_bucket_closes_it() {
     assert!(app.bucket.is_none() && app.prefix.is_empty() && app.props.is_none());
 }
 
-/// egui's bundled fonts, without the system ones, must draw every symbol the app itself shows.
 #[test]
 fn every_symbol_in_the_ui_has_a_glyph() {
     let ctx = harness(App::new(vec![], None)).ctx.clone();
@@ -335,7 +330,6 @@ fn every_symbol_in_the_ui_has_a_glyph() {
     assert!(missing.is_empty(), "{missing:?}");
 }
 
-/// Every icon draws from Lucide, not from a later font that uses the same code point.
 #[test]
 fn icons_come_from_lucide() {
     let ctx = harness(App::new(vec![], None)).ctx.clone();

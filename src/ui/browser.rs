@@ -178,7 +178,7 @@ impl App {
         let mut menu_action: Option<(&str, Entry)> = None;
         let mut sort_by = None;
         let has_public = self.public_url("").is_some();
-        // Modifiers as they were at the click itself, not at the end of the frame.
+        // modifiers at the click, not at the end of the frame
         let mods = ui.input(|i| {
             let at_click = i.events.iter().rev().find_map(|e| match e {
                 egui::Event::PointerButton {
@@ -213,7 +213,7 @@ impl App {
                         (c, false) if c == col => format!(" {}", icons::SORT_DESC),
                         _ => String::new(),
                     };
-                    // The cell's own response: a button inside would lose the click to the clickable header row.
+                    // a button here would lose the click to the clickable header row
                     h.col(|ui| {
                         let text = RichText::new(format!("{label}{arrow}")).weak();
                         let r = ui.add(egui::Label::new(text).sense(Sense::click()));

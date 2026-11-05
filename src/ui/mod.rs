@@ -8,7 +8,6 @@ pub mod theme;
 use crate::app::App;
 use eframe::egui::{self, Color32, Id, Key, RichText, vec2};
 
-/// No single red reads both as text on the dark panels and behind white text, so there are two.
 pub const RED: Color32 = Color32::from_rgb(240, 110, 110);
 pub const RED_FILL: Color32 = Color32::from_rgb(200, 60, 60);
 pub const ACCENT: Color32 = Color32::from_rgb(45, 100, 180);
@@ -104,7 +103,7 @@ impl eframe::App for App {
 }
 
 impl App {
-    /// Separate from `eframe::App::ui` so headless tests can drive it without a `Frame`.
+    // separate so headless tests can drive it without a `Frame`
     pub(crate) fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         self.begin_frame(&ctx);

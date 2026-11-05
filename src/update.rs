@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::{env, fs, io};
 
-/// Set by the release workflow. Local builds have none and never look for updates.
+// set by the release workflow; local builds never check for updates
 pub const VERSION: Option<&str> = option_env!("SKYBIN_VERSION");
 const REPO: &str = "realChriss/skybin";
 
@@ -11,7 +11,6 @@ fn client() -> reqwest::Result<reqwest::Client> {
     reqwest::Client::builder().user_agent("skybin").build()
 }
 
-/// The latest release tag, if it is newer than this build.
 pub async fn check() -> Option<String> {
     #[derive(Deserialize)]
     struct Release {

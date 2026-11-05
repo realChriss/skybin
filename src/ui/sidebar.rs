@@ -21,8 +21,7 @@ impl App {
             .cur_profile()
             .map(|p| p.name)
             .unwrap_or_else(|| "None".into());
-        // Right-to-left so the buttons take their size first and the picker fills the rest;
-        // sizing from `available_width()` in a resizable panel otherwise makes it grow every frame.
+        // right-to-left: sizing from `available_width()` makes the resizable panel grow every frame
         ui.horizontal(|ui| {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = 2.0;
