@@ -11,7 +11,6 @@ fn clock(d: Duration) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
-// eases toward the downloaded share, restarting from empty after a refill shrinks it
 fn smoothed(ui: &egui::Ui, id: egui::Id, target: f32) -> f32 {
     let dt = ui.input(|i| i.stable_dt).min(0.1);
     let shown = ui.data_mut(|d| {
@@ -31,7 +30,6 @@ fn smoothed(ui: &egui::Ui, id: egui::Id, target: f32) -> f32 {
     shown
 }
 
-// a ring that fills clockwise from 12 o'clock
 fn ring(ui: &egui::Ui, rect: egui::Rect, fill: f32, color: Color32) {
     let center = rect.center();
     let radius = rect.height().min(rect.width()) * 0.5 - 5.0;
@@ -289,7 +287,6 @@ mod tests {
                 Playing::default(),
             );
         h.step();
-        // the whole row fits the panel instead of pushing it wider
         let time = h.get_by(|n| {
             n.role() == Role::Label && n.value().is_some_and(|v| v.ends_with("/ 1:40"))
         });

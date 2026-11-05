@@ -67,7 +67,6 @@ impl Profile {
 
 #[derive(Clone)]
 pub struct Entry {
-    // folders end with '/'
     pub key: String,
     pub name: String,
     pub size: u64,
@@ -332,7 +331,6 @@ pub async fn new_folder(b: &Bucket, key: String) -> Res<String> {
 
 const CACHE_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 
-// streamed objects are a folder of block files, everything else a single file
 pub struct Cache {
     pub(crate) dir: PathBuf,
     budget: u64,

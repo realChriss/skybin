@@ -24,7 +24,6 @@ impl App {
             .frame(egui::Frame::window(&ctx.global_style()))
             .show(ctx, |ui| {
             ui.set_width(380.0);
-            // (primary label, is destructive, input valid, can delete profile)
             let (label, danger, valid, deletable) = match d {
                 Dialog::Profile { idx, p } => {
                     ui.heading(if idx.is_some() {

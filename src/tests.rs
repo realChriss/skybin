@@ -32,7 +32,7 @@ fn file(name: &str, size: u64, modified: &str) -> Entry {
 
 fn browsing() -> App {
     let mut app = App::new(vec![offline()], Some(0));
-    app.started = true; // skip the initial bucket fetch
+    app.started = true;
     app.buckets = vec!["photos".into()];
     app.bucket = Some("photos".into());
     app.entries = vec![

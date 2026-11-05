@@ -82,7 +82,6 @@ pub(crate) enum Dialog {
     Delete(Vec<Entry>),
 }
 
-// replacing or dropping it cancels the open
 pub(crate) struct Pending {
     pub(crate) id: u64,
     pub(crate) cancel: Arc<AtomicBool>,

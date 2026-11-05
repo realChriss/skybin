@@ -90,7 +90,6 @@ pub trait Playback {
     }
 }
 
-// decides how much to keep downloaded and whether playback has to wait for it
 struct Buffer {
     reader: Arc<S3Reader>,
     bitrate: Option<f64>,
@@ -98,7 +97,6 @@ struct Buffer {
     engaged: bool,
     starting: bool,
     hold: Hold,
-    // times playback ran out of data, which raises what it waits for before resuming
     stalls: u32,
     target: u64,
     ready: u64,
@@ -123,7 +121,6 @@ impl Buffer {
         }
     }
 
-    // play was pressed, or a seek landed while playing
     fn start(&mut self) {
         self.engaged = true;
         self.starting = true;
@@ -157,11 +154,8 @@ impl Buffer {
     }
 }
 
-// samples handed to the audio device in one go
 const CHUNK: usize = 4096;
-// how far sound may drift from the picture before it is fed again
 const DRIFT: Duration = Duration::from_millis(250);
-// how long to wait before retrying a read the network failed
 const RETRY: Duration = Duration::from_millis(100);
 
 fn sink() -> Result<MixerDeviceSink, String> {
@@ -719,7 +713,6 @@ impl Video {
                     }
                     Err(_) if cancel::cancelled() => return None,
                     Err(_) if reader.troubled() => std::thread::sleep(RETRY),
-                    // undecodable: skip it rather than stop the sound
                     Err(_) => {
                         next += n;
                         return Some(vec![0.0; n as usize * channels as usize]);
@@ -779,7 +772,6 @@ impl Playback for Video {
         }
         self.clock().set(to);
         self.reader.jumped();
-        // dropping the old Frames cancels its in-flight decode
         self.frames = self.decode_from(to);
         self.next = None;
         if self.wants_play {

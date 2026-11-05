@@ -55,7 +55,6 @@ if $bump; then printf '    - set Cargo.toml to %s and commit it\n' "$version"; f
 if $bump || ((ahead > 0)); then printf '    - push main to origin\n'; fi
 printf '    - tag %s and push it, which builds and publishes the binaries\n' "$tag"
 
-# declining is an answer, not a failure
 read -rp $'\n'"  Release $tag? [y/N]: " confirm
 if [[ $confirm != [yY] ]]; then
   printf '\n  Nothing was pushed.\n\n'

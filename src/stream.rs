@@ -9,13 +9,11 @@ use std::time::{Duration, Instant};
 use tokio::runtime::Handle;
 
 pub const BLOCK: u64 = 1024 * 1024;
-// blocks kept in memory; the window ahead lives on disk
 const KEEP: usize = 16;
 // enough for opening and the first frames, until the player sets a target
 const START_AHEAD: u64 = 2;
 const MAX_INFLIGHT: usize = 4;
 const RETRY_AFTER: Duration = Duration::from_secs(2);
-// an unresolved failure this recent means the network is in trouble
 const TROUBLE_FOR: Duration = Duration::from_secs(10);
 
 pub trait Fetch: Send + Sync + 'static {
@@ -35,8 +33,6 @@ impl Fetch for S3Fetch {
     }
 }
 
-// reads an object in blocks: memory, then the disk cache, then ranged GETs, and keeps the
-// window ahead of the latest read downloaded
 pub struct S3Reader {
     inner: Arc<Inner>,
 }
@@ -80,7 +76,6 @@ impl State {
         }
     }
 
-    // a recent, unresolved failure in the window playback needs next
     fn trouble(&self) -> Option<String> {
         let window = self.anchor.map(|a| a..a.saturating_add(self.ahead));
         self.failed
@@ -93,7 +88,6 @@ impl State {
     }
 }
 
-// what the player needs to decide whether to wait
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Fill {
     pub waiting: bool,
@@ -130,7 +124,6 @@ impl S3Reader {
         })
     }
 
-    // the bytes to keep downloaded from the latest read on
     pub fn set_ahead(&self, bytes: u64) {
         let mut blocks = bytes.div_ceil(BLOCK) + 1;
         if self.inner.disk.is_none() {
@@ -271,7 +264,6 @@ impl Inner {
             {
                 break Err(io::Error::other(e.clone()));
             }
-            // seeking or closing the preview must not wait out a slow request
             if cancel::cancelled() {
                 break Err(io::Error::other("cancelled"));
             }
@@ -373,7 +365,6 @@ impl Inner {
             .map(Into::into)
     }
 
-    // the block, and whether it is on disk
     fn read_block(&self, i: u64) -> Result<(Arc<[u8]>, bool), String> {
         if let Some(data) = self.read_stored(i) {
             return Ok((data, true));
@@ -493,7 +484,6 @@ pub fn ready_bytes(bitrate: Option<f64>, stalls: u32, target: u64, to_end: u64) 
     grown.min(target).min(to_end)
 }
 
-// `starting`: play was pressed or a seek landed while playing
 pub fn hold(state: Hold, starting: bool, fill: &Fill, ready: u64) -> Hold {
     let short = fill.buffered < ready;
     let stuck = fill.waiting || fill.trouble.is_some();
