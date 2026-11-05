@@ -384,25 +384,23 @@ impl Cache {
     }
 
     // never creates the cache folder itself, so a download finishing after exit's cleanup can't refill it
-    pub fn put(&self, path: &Path, data: &[u8]) -> bool {
+    pub fn put(&self, path: &Path, data: &[u8]) -> std::io::Result<()> {
         if let Some(parent) = path.parent().filter(|p| *p != self.dir) {
             let _ = std::fs::create_dir(parent);
         }
         let tmp = path.with_extension("tmp");
-        let Ok(mut f) = std::fs::File::create_new(&tmp) else {
-            return false;
-        };
-        let written = f.write_all(data).is_ok();
+        let mut f = std::fs::File::create_new(&tmp)?;
+        let written = f.write_all(data);
         drop(f);
-        if !written || std::fs::rename(&tmp, path).is_err() {
+        if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, path)) {
             let _ = std::fs::remove_file(&tmp);
-            return false;
+            return Err(e);
         }
         let used = self.used.fetch_add(data.len() as u64, Ordering::Relaxed) + data.len() as u64;
         if used > self.budget {
             self.trim();
         }
-        true
+        Ok(())
     }
 
     fn trim(&self) {
@@ -413,8 +411,10 @@ impl Cache {
         cache_files(&self.dir, true, &mut files);
         files.sort();
         let mut total: u64 = files.iter().map(|f| f.1).sum();
+        // headroom, so the next few puts don't rescan the whole cache
+        let keep = self.budget - self.budget / 10;
         for (_, len, path) in files {
-            if total <= self.budget {
+            if total <= keep {
                 break;
             }
             if std::fs::remove_file(path).is_ok() {
@@ -636,7 +636,7 @@ mod tests {
         };
         let old = cache.path(&b, &e);
         assert_ne!(old, cache.path(&p.bucket("c").unwrap(), &e));
-        cache.put(&old, b"hello");
+        cache.put(&old, b"hello").unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let hit = rt.block_on(fetch(&b, &e.key, Some(&(cache.clone(), old.clone()))));
@@ -650,7 +650,7 @@ mod tests {
                 .is_err()
         );
         let block = new.join("0");
-        cache.put(&block, b"world");
+        cache.put(&block, b"world").unwrap();
         assert_eq!(cache.get(&block).unwrap(), b"world");
 
         let age = |path: &Path, secs| {
@@ -661,14 +661,14 @@ mod tests {
         age(&old, 60);
         age(&block, 30);
         let newest = new.join("1");
-        cache.put(&newest, b"!!");
+        cache.put(&newest, b"!!").unwrap();
         assert!(!old.exists() && block.exists() && newest.exists());
-        cache.put(&new.join("2"), b"later");
+        cache.put(&new.join("2"), b"later").unwrap();
         assert!(!block.exists() && newest.exists());
 
         std::fs::remove_dir_all(&dir).unwrap();
-        cache.put(&old, b"late");
-        cache.put(&new.join("3"), b"late");
+        assert!(cache.put(&old, b"late").is_err());
+        assert!(cache.put(&new.join("3"), b"late").is_err());
         assert!(!dir.exists());
     }
 

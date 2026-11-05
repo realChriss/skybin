@@ -128,8 +128,8 @@ impl Buffer {
 
     fn update(&mut self, wants_play: bool, remaining: Duration) -> Hold {
         if self.engaged {
-            self.target = stream::ahead_bytes(self.bitrate, self.reader.rate(), remaining);
-            self.reader.set_ahead(self.target);
+            let want = stream::ahead_bytes(self.bitrate, self.reader.rate(), remaining);
+            self.target = self.reader.set_ahead(want);
         }
         self.fill = self.reader.fill();
         self.ready = stream::ready_bytes(self.bitrate, self.stalls, self.target, self.fill.to_end);

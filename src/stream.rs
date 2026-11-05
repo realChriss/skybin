@@ -57,11 +57,18 @@ struct State {
     waiting: usize,
     meter: Meter,
     closed: bool,
+    disk_failed: bool,
 }
 
 impl State {
     fn present(&self, i: u64) -> bool {
         self.mem.contains_key(&i) || self.stored.contains(&i)
+    }
+
+    fn backing_off(&self, i: u64) -> bool {
+        self.failed
+            .get(&i)
+            .is_some_and(|(_, at)| at.elapsed() < RETRY_AFTER)
     }
 
     fn remember(&mut self, i: u64, data: Arc<[u8]>) {
@@ -124,16 +131,17 @@ impl S3Reader {
         })
     }
 
-    pub fn set_ahead(&self, bytes: u64) {
+    pub fn set_ahead(&self, bytes: u64) -> u64 {
+        let mut st = self.inner.state();
         let mut blocks = bytes.div_ceil(BLOCK) + 1;
-        if self.inner.disk.is_none() {
+        if self.inner.disk.is_none() || st.disk_failed {
             blocks = blocks.min(KEEP as u64 - 4);
         }
-        let mut st = self.inner.state();
         if st.ahead != blocks {
             st.ahead = blocks;
             self.inner.schedule(&mut st);
         }
+        bytes.min((blocks - 1) * BLOCK)
     }
 
     // after a seek the old position says nothing until the first read at the new one
@@ -267,7 +275,7 @@ impl Inner {
             if cancel::cancelled() {
                 break Err(io::Error::other("cancelled"));
             }
-            if !st.loading.contains(&i) {
+            if !st.loading.contains(&i) && !st.backing_off(i) {
                 self.start(&mut st, i);
                 continue;
             }
@@ -296,11 +304,7 @@ impl Inner {
             if st.loading.len() >= MAX_INFLIGHT {
                 break;
             }
-            let backing_off = st
-                .failed
-                .get(&i)
-                .is_some_and(|(_, at)| at.elapsed() < RETRY_AFTER);
-            if !st.present(i) && !st.loading.contains(&i) && !backing_off {
+            if !st.present(i) && !st.loading.contains(&i) && !st.backing_off(i) {
                 self.start(st, i);
             }
         }
@@ -386,7 +390,18 @@ impl Inner {
         if data.len() != want {
             return Err(format!("got {} bytes instead of {want}", data.len()));
         }
-        let stored = self.block_path(i).is_some_and(|(c, p)| c.put(&p, &data));
+        let stored = match self.block_path(i) {
+            Some((c, p)) => match c.put(&p, &data) {
+                Ok(()) => true,
+                // another reader of the same object is writing this block
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => false,
+                Err(_) => {
+                    self.state().disk_failed = true;
+                    false
+                }
+            },
+            None => false,
+        };
         Ok((data.into(), stored))
     }
 }
@@ -706,7 +721,7 @@ mod tests {
     fn without_a_disk_cache_the_window_fits_in_memory() {
         let fake = Fake::new(blocks(40));
         let r = fake.reader();
-        r.set_ahead(30 * BLOCK);
+        assert_eq!(r.set_ahead(30 * BLOCK), (KEEP as u64 - 5) * BLOCK);
         r.read_at(0, &mut [0; 10]).unwrap();
         assert!(
             wait(|| fake.asked().len() == KEEP - 4),
@@ -715,6 +730,21 @@ mod tests {
         );
         std::thread::sleep(Duration::from_millis(50));
         assert_eq!(fake.asked().len(), KEEP - 4);
+    }
+
+    #[test]
+    fn a_failing_disk_cache_shrinks_the_window_to_memory() {
+        let dir = std::env::temp_dir().join(format!("skybin-nodisk-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("o"), b"").unwrap();
+        let cache = Arc::new(Cache::new(dir.clone(), u64::MAX));
+        let fake = Fake::new(blocks(40));
+        let slot = Some((cache, dir.join("o")));
+        let r = S3Reader::with_fetch(Box::new(fake.clone()), 40 * BLOCK, slot);
+        assert_eq!(r.set_ahead(30 * BLOCK), 30 * BLOCK);
+        r.read_at(0, &mut [0; 10]).unwrap();
+        assert_eq!(r.set_ahead(30 * BLOCK), (KEEP as u64 - 5) * BLOCK);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -788,6 +818,23 @@ mod tests {
         assert!(err.to_string().contains("block 0 failed"), "{err}");
         r.read_at(0, &mut [0; 10]).unwrap();
         assert_eq!(fake.times(0), 2);
+    }
+
+    #[test]
+    fn a_read_waits_out_the_backoff_instead_of_refetching() {
+        let fake = Fake::new(blocks(2));
+        fake.fail_always.lock().unwrap().insert(0);
+        let r = fake.reader();
+        assert!(r.read_at(0, &mut [0; 10]).is_err());
+        let (r2, flag) = (r.clone(), Arc::new(AtomicBool::new(false)));
+        let f = flag.clone();
+        let read =
+            std::thread::spawn(move || cancel::with_cancel(&f, || r2.read_at(0, &mut [0; 10])));
+        assert!(wait(|| r.fill().waiting));
+        std::thread::sleep(Duration::from_millis(200));
+        flag.store(true, Ordering::Relaxed);
+        assert!(read.join().unwrap().is_err());
+        assert_eq!(fake.times(0), 1);
     }
 
     #[test]
