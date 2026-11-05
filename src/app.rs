@@ -1,10 +1,13 @@
 use crate::backend::{self, Entry, Profile};
-use crate::media::{self, Audio, Kind, Video};
+use crate::media::{self, Audio, Kind, OpenAudio, Video};
+use crate::stream::S3Reader;
 use crate::update;
 use eframe::egui;
 use std::collections::HashSet;
 use std::future::Future;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 pub(crate) type Props = Result<Vec<(String, String)>, String>;
@@ -17,7 +20,7 @@ pub(crate) enum Msg {
         result: Result<Vec<Entry>, String>,
     },
     Props(String, Props),
-    Preview(String, Result<Fetched, String>),
+    Preview(u64, Result<Fetched, String>),
     Progress(String),
     Done {
         result: Result<String, String>,
@@ -28,8 +31,34 @@ pub(crate) enum Msg {
 }
 
 pub(crate) enum Fetched {
-    Bytes(Vec<u8>),
-    Video(filmcraft_media::SharedSource),
+    Image(Vec<u8>),
+    Audio(OpenAudio),
+    Video(filmcraft_media::SharedSource, Arc<S3Reader>),
+}
+
+async fn open_stream(
+    b: Box<s3::Bucket>,
+    key: String,
+    size: Option<u64>,
+    disk: Option<backend::Slot>,
+    kind: Kind,
+    cancel: Arc<AtomicBool>,
+) -> Result<Fetched, String> {
+    let len = match size {
+        Some(n) => n,
+        None => backend::nice(backend::size(&b, &key).await)?,
+    };
+    let reader = S3Reader::open(b, key.clone(), len, tokio::runtime::Handle::current(), disk);
+    // opening reads blocks synchronously, and stops waiting for them once cancelled
+    let open = tokio::task::spawn_blocking(move || {
+        filmcraft_media::cancel::with_cancel(&cancel, || match kind {
+            Kind::Video => {
+                media::open_video(&key, reader.clone()).map(|source| Fetched::Video(source, reader))
+            }
+            _ => media::open_audio(&key, reader).map(Fetched::Audio),
+        })
+    });
+    open.await.map_err(|e| e.to_string())?
 }
 
 pub(crate) fn image_uri(key: &str) -> String {
@@ -53,8 +82,29 @@ pub(crate) enum Dialog {
     Delete(Vec<Entry>),
 }
 
+pub(crate) struct Pending {
+    pub(crate) id: u64,
+    pub(crate) cancel: Arc<AtomicBool>,
+}
+
+impl Pending {
+    pub(crate) fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        Self {
+            id: NEXT.fetch_add(1, Ordering::Relaxed),
+            cancel: Arc::default(),
+        }
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
 pub(crate) enum Preview {
-    Loading,
+    Loading(Pending),
     Image(egui::load::Bytes),
     Audio(Audio),
     Video(Video),
@@ -89,7 +139,7 @@ pub struct App {
     pub(crate) sort: (Sort, bool),
     pub(crate) props: Option<(String, Props)>,
     pub(crate) preview: Option<(String, Preview)>,
-    pub(crate) cache: Option<PathBuf>,
+    pub(crate) cache: Option<Arc<backend::Cache>>,
 
     pub(crate) dialog: Option<Dialog>,
     pub(crate) focus_dialog: bool,
@@ -234,16 +284,17 @@ impl App {
                     }
                 }
                 Msg::Props(key, r) => self.props = Some((key, r)),
-                Msg::Preview(key, r) => {
-                    if self.preview.as_ref().map(|p| &p.0) == Some(&key) {
+                Msg::Preview(id, r) => {
+                    if let Some((key, Preview::Loading(p))) = &self.preview
+                        && p.id == id
+                    {
+                        let key = key.clone();
                         let p = match r.and_then(|f| match f {
-                            Fetched::Video(source) => {
-                                Video::new(source, &self.ctx).map(Preview::Video)
+                            Fetched::Video(source, reader) => {
+                                Video::new(source, reader, &self.ctx).map(Preview::Video)
                             }
-                            Fetched::Bytes(data) => match media::kind(&key) {
-                                Some(Kind::Audio) => Audio::new(&key, data).map(Preview::Audio),
-                                _ => Ok(Preview::Image(data.into())),
-                            },
+                            Fetched::Audio(open) => Audio::new(open).map(Preview::Audio),
+                            Fetched::Image(data) => Ok(Preview::Image(data.into())),
                         }) {
                             Ok(p) => p,
                             Err(e) => Preview::Note(format!("Can't preview this file: {e}")),
@@ -364,29 +415,30 @@ impl App {
             return;
         };
         let entry = self.entries.iter().find(|e| e.key == key).cloned();
-        let size = entry.as_ref().map_or(0, |e| e.size);
-        if size > media::MAX_PREVIEW {
+        let size = entry.as_ref().map(|e| e.size);
+        if kind == Kind::Image
+            && let Some(size) = size.filter(|&s| s > media::MAX_PREVIEW)
+        {
             let note = format!("Too large to preview here ({}).", crate::ui::human(size));
             self.preview = Some((key, Preview::Note(note)));
             return;
         }
         let Some(b) = self.cur_bucket() else { return };
-        let cached = self
-            .cache
-            .as_ref()
-            .zip(entry)
-            .map(|(dir, e)| backend::cache_path(dir, &b, &e));
-        self.preview = Some((key.clone(), Preview::Loading));
+        let cached = self.cache.clone().zip(entry).map(|(c, e)| {
+            let path = c.path(&b, &e);
+            (c, path)
+        });
+        let pending = Pending::new();
+        let (id, cancel) = (pending.id, pending.cancel.clone());
+        self.preview = Some((key.clone(), Preview::Loading(pending)));
         self.spawn(async move {
-            let data = backend::fetch(&b, &key, cached.as_deref()).await;
-            let r = backend::nice(data).and_then(|data| {
-                if kind == Kind::Video {
-                    media::open_video(&key, data).map(Fetched::Video)
-                } else {
-                    Ok(Fetched::Bytes(data))
-                }
-            });
-            Msg::Preview(key, r)
+            let r = if kind == Kind::Image {
+                let data = backend::fetch(&b, &key, cached.as_ref()).await;
+                backend::nice(data).map(Fetched::Image)
+            } else {
+                open_stream(b, key, size, cached, kind, cancel).await
+            };
+            Msg::Preview(id, r)
         });
     }
 
@@ -564,5 +616,12 @@ impl App {
         self.buckets.clear();
         self.navigate(None, String::new());
         self.refresh_buckets();
+    }
+}
+
+// fields drop in order, and the runtime (first) waits for an open the preview's drop cancels
+impl Drop for App {
+    fn drop(&mut self) {
+        self.preview = None;
     }
 }

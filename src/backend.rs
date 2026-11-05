@@ -6,6 +6,8 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 pub type Res<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -65,7 +67,6 @@ impl Profile {
 
 #[derive(Clone)]
 pub struct Entry {
-    // folders end with '/'
     pub key: String,
     pub name: String,
     pub size: u64,
@@ -330,6 +331,15 @@ pub async fn new_folder(b: &Bucket, key: String) -> Res<String> {
 
 const CACHE_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 
+pub struct Cache {
+    pub(crate) dir: PathBuf,
+    budget: u64,
+    used: AtomicU64,
+    trimming: Mutex<()>,
+}
+
+pub type Slot = (Arc<Cache>, PathBuf);
+
 fn cache_dir() -> Option<PathBuf> {
     let local = std::env::var_os("LOCALAPPDATA").map(|p| PathBuf::from(p).join("skybin"));
     Some(
@@ -339,7 +349,7 @@ fn cache_dir() -> Option<PathBuf> {
     )
 }
 
-pub fn open_cache() -> Option<PathBuf> {
+pub fn open_cache() -> Option<Arc<Cache>> {
     let dir = cache_dir()?;
     let _ = std::fs::remove_dir_all(&dir);
     let mut builder = std::fs::DirBuilder::new();
@@ -347,70 +357,124 @@ pub fn open_cache() -> Option<PathBuf> {
     #[cfg(unix)]
     std::os::unix::fs::DirBuilderExt::mode(&mut builder, 0o700);
     builder.create(&dir).ok()?;
-    Some(dir)
+    Some(Arc::new(Cache::new(dir, CACHE_BUDGET)))
 }
 
-pub fn cache_path(dir: &Path, b: &Bucket, e: &Entry) -> PathBuf {
-    let mut h = DefaultHasher::new();
-    (b.url(), &e.key, e.size, &e.modified, &e.etag).hash(&mut h);
-    dir.join(format!("{:016x}", h.finish()))
-}
+impl Cache {
+    pub(crate) fn new(dir: PathBuf, budget: u64) -> Self {
+        Self {
+            dir,
+            budget,
+            used: AtomicU64::new(0),
+            trimming: Mutex::new(()),
+        }
+    }
 
-fn cache_get(path: &Path) -> Option<Vec<u8>> {
-    let data = std::fs::read(path).ok()?;
-    let file = std::fs::OpenOptions::new().write(true).open(path);
-    let _ = file.and_then(|f| f.set_modified(SystemTime::now()));
-    Some(data)
-}
+    pub fn path(&self, b: &Bucket, e: &Entry) -> PathBuf {
+        let mut h = DefaultHasher::new();
+        (b.url(), &e.key, e.size, &e.modified, &e.etag).hash(&mut h);
+        self.dir.join(format!("{:016x}", h.finish()))
+    }
 
-// never creates the folder, so a download finishing after exit's cleanup can't refill it
-fn cache_put(path: &Path, data: &[u8]) {
-    let tmp = path.with_extension("tmp");
-    let Ok(mut f) = std::fs::File::create_new(&tmp) else {
-        return;
-    };
-    let written = f.write_all(data).is_ok();
-    drop(f);
-    if !written || std::fs::rename(&tmp, path).is_err() {
-        let _ = std::fs::remove_file(&tmp);
+    pub fn get(&self, path: &Path) -> Option<Vec<u8>> {
+        let data = std::fs::read(path).ok()?;
+        let file = std::fs::OpenOptions::new().write(true).open(path);
+        let _ = file.and_then(|f| f.set_modified(SystemTime::now()));
+        Some(data)
+    }
+
+    // never creates the cache folder itself, so a download finishing after exit's cleanup can't refill it
+    pub fn put(&self, path: &Path, data: &[u8]) -> std::io::Result<()> {
+        if let Some(parent) = path.parent().filter(|p| *p != self.dir) {
+            let _ = std::fs::create_dir(parent);
+        }
+        let tmp = path.with_extension("tmp");
+        let mut f = std::fs::File::create_new(&tmp)?;
+        let written = f.write_all(data);
+        drop(f);
+        if let Err(e) = written.and_then(|()| std::fs::rename(&tmp, path)) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e);
+        }
+        let used = self.used.fetch_add(data.len() as u64, Ordering::Relaxed) + data.len() as u64;
+        if used > self.budget {
+            self.trim();
+        }
+        Ok(())
+    }
+
+    fn trim(&self) {
+        let Ok(_busy) = self.trimming.try_lock() else {
+            return;
+        };
+        let mut files = Vec::new();
+        cache_files(&self.dir, true, &mut files);
+        files.sort();
+        let mut total: u64 = files.iter().map(|f| f.1).sum();
+        // headroom, so the next few puts don't rescan the whole cache
+        let keep = self.budget - self.budget / 10;
+        for (_, len, path) in files {
+            if total <= keep {
+                break;
+            }
+            if std::fs::remove_file(path).is_ok() {
+                total -= len;
+            }
+        }
+        self.used.store(total, Ordering::Relaxed);
     }
 }
 
-fn cache_trim(dir: &Path, budget: u64) {
+fn cache_files(dir: &Path, nested: bool, out: &mut Vec<(SystemTime, u64, PathBuf)>) {
     let Ok(files) = std::fs::read_dir(dir) else {
         return;
     };
-    let mut files: Vec<_> = files
-        .flatten()
-        .filter_map(|f| {
-            let meta = f.metadata().ok()?;
-            Some((meta.modified().ok()?, meta.len(), f.path()))
-        })
-        .collect();
-    files.sort();
-    let mut total: u64 = files.iter().map(|f| f.1).sum();
-    for (_, len, path) in files {
-        if total <= budget {
-            break;
-        }
-        if std::fs::remove_file(path).is_ok() {
-            total -= len;
+    for f in files.flatten() {
+        let (Ok(meta), path) = (f.metadata(), f.path()) else {
+            continue;
+        };
+        if meta.is_dir() {
+            if nested {
+                cache_files(&path, false, out);
+            }
+        } else if path.extension().is_none_or(|e| e != "tmp")
+            && let Ok(modified) = meta.modified()
+        {
+            out.push((modified, meta.len(), path));
         }
     }
 }
 
-pub async fn fetch(b: &Bucket, key: &str, cached: Option<&Path>) -> Res<Vec<u8>> {
-    if let Some(data) = cached.and_then(cache_get) {
+pub async fn fetch(b: &Bucket, key: &str, cached: Option<&Slot>) -> Res<Vec<u8>> {
+    if let Some(data) = cached.and_then(|(c, p)| c.get(p)) {
         return Ok(data);
     }
     let data = b.get_object(key).await?.to_vec();
-    if let Some(path) = cached {
-        cache_put(path, &data);
-        if let Some(dir) = path.parent() {
-            cache_trim(dir, CACHE_BUDGET);
-        }
+    if let Some((c, p)) = cached {
+        let _ = c.put(p, &data);
     }
     Ok(data)
+}
+
+pub async fn get_range(b: &Bucket, key: &str, start: u64, end: u64) -> Res<Vec<u8>> {
+    let data = b
+        .get_object_range(key, start, Some(end - 1))
+        .await?
+        .to_vec();
+    if data.len() as u64 != end - start {
+        return Err(format!(
+            "the server sent {} bytes instead of {}",
+            data.len(),
+            end - start
+        )
+        .into());
+    }
+    Ok(data)
+}
+
+pub async fn size(b: &Bucket, key: &str) -> Res<u64> {
+    let (h, _) = b.head_object(key).await?;
+    Ok(h.content_length.unwrap_or(0).max(0) as u64)
 }
 
 // stored media types are often wrong (`text/plain`), which stops browsers playing the file
@@ -553,6 +617,7 @@ mod tests {
     fn preview_cache_serves_stored_files_and_trims_the_oldest() {
         let dir = std::env::temp_dir().join(format!("skybin-cache-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        let cache = Arc::new(Cache::new(dir.clone(), 10));
         let p = Profile {
             endpoint: "http://127.0.0.1:9".into(),
             access_key: "k".into(),
@@ -569,29 +634,41 @@ mod tests {
             etag: "one".into(),
             is_dir: false,
         };
-        let old = cache_path(&dir, &b, &e);
-        assert_ne!(old, cache_path(&dir, &p.bucket("c").unwrap(), &e));
-        cache_put(&old, b"hello");
+        let old = cache.path(&b, &e);
+        assert_ne!(old, cache.path(&p.bucket("c").unwrap(), &e));
+        cache.put(&old, b"hello").unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let hit = rt.block_on(fetch(&b, &e.key, Some(&old)));
+        let hit = rt.block_on(fetch(&b, &e.key, Some(&(cache.clone(), old.clone()))));
         assert_eq!(hit.unwrap(), b"hello");
 
         e.etag = "two".into();
-        let new = cache_path(&dir, &b, &e);
+        let new = cache.path(&b, &e);
         assert_ne!(old, new);
-        assert!(rt.block_on(fetch(&b, &e.key, Some(&new))).is_err());
-        cache_put(&new, b"world");
+        assert!(
+            rt.block_on(fetch(&b, &e.key, Some(&(cache.clone(), new.clone()))))
+                .is_err()
+        );
+        let block = new.join("0");
+        cache.put(&block, b"world").unwrap();
+        assert_eq!(cache.get(&block).unwrap(), b"world");
 
-        let past = SystemTime::now() - std::time::Duration::from_secs(60);
-        let file = std::fs::OpenOptions::new().write(true).open(&old).unwrap();
-        file.set_modified(past).unwrap();
-        drop(file);
-        cache_trim(&dir, 5);
-        assert!(!old.exists() && new.exists());
+        let age = |path: &Path, secs| {
+            let file = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+            let t = SystemTime::now() - std::time::Duration::from_secs(secs);
+            file.set_modified(t).unwrap();
+        };
+        age(&old, 60);
+        age(&block, 30);
+        let newest = new.join("1");
+        cache.put(&newest, b"!!").unwrap();
+        assert!(!old.exists() && block.exists() && newest.exists());
+        cache.put(&new.join("2"), b"later").unwrap();
+        assert!(!block.exists() && newest.exists());
 
         std::fs::remove_dir_all(&dir).unwrap();
-        cache_put(&new, b"late");
+        assert!(cache.put(&old, b"late").is_err());
+        assert!(cache.put(&new.join("3"), b"late").is_err());
         assert!(!dir.exists());
     }
 
@@ -681,6 +758,21 @@ mod tests {
                 names(list_dir(&b, "").await.unwrap()),
                 [("moved".into(), true)]
             );
+
+            let block = crate::stream::BLOCK as usize;
+            let big: Vec<u8> = (0..3 * block + 10).map(|i| (i % 251) as u8).collect();
+            b.put_object("big.bin", &big).await.unwrap();
+            assert_eq!(size(&b, "big.bin").await.unwrap(), big.len() as u64);
+            let (rb, len) = (b.clone(), big.len() as u64);
+            let rt = tokio::runtime::Handle::current();
+            let got = tokio::task::spawn_blocking(move || {
+                use filmcraft_media::ByteReader;
+                let r = crate::stream::S3Reader::open(rb, "big.bin".into(), len, rt, None);
+                let mut buf = vec![0; block + 20];
+                r.read_at(block as u64 * 2 - 10, &mut buf).map(|_| buf)
+            });
+            let got = got.await.unwrap().unwrap();
+            assert_eq!(got, big[block * 2 - 10..block * 3 + 10]);
 
             delete_bucket(&b, true, &report).await.unwrap();
             assert!(!list_buckets(&p).await.unwrap().contains(&name));

@@ -1,9 +1,11 @@
-use crate::app::{App, Dialog, Preview};
+use crate::app::{App, Dialog, Fetched, Msg, Pending, Preview};
 use crate::backend::{Entry, Profile};
 use crate::ui::icons::{BUCKET, EXTERNAL, FILE, FOLDER, SORT_ASC, TRASH, UPLOAD};
 use eframe::egui::{self, Key, Modifiers, accesskit::Role};
 use egui_kittest::Harness;
 use egui_kittest::kittest::{NodeT, Queryable};
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
 
 fn offline() -> Profile {
     Profile {
@@ -30,7 +32,7 @@ fn file(name: &str, size: u64, modified: &str) -> Entry {
 
 fn browsing() -> App {
     let mut app = App::new(vec![offline()], Some(0));
-    app.started = true; // skip the initial bucket fetch
+    app.started = true;
     app.buckets = vec!["photos".into()];
     app.bucket = Some("photos".into());
     app.entries = vec![
@@ -280,6 +282,45 @@ fn image_preview_keeps_its_place() {
         h.run_steps(3);
     }
     assert_eq!(h.get_by_role(Role::Image).rect(), image);
+}
+
+#[test]
+fn only_the_latest_preview_request_is_shown_and_others_are_cancelled() {
+    let mut app = browsing();
+    let loading = |p: Pending| Some(("b.jpg".to_string(), Preview::Loading(p)));
+    let first = Pending::new();
+    let (first_id, first_cancel) = (first.id, first.cancel.clone());
+    app.preview = loading(first);
+    let second = Pending::new();
+    let second_id = second.id;
+    app.preview = loading(second);
+    assert!(first_cancel.load(Ordering::Relaxed));
+
+    let png = include_bytes!("../assets/icon.png").to_vec();
+    app.tx
+        .send(Msg::Preview(first_id, Ok(Fetched::Image(png.clone()))))
+        .unwrap();
+    app.poll();
+    assert!(matches!(app.preview, Some((_, Preview::Loading(_)))));
+    app.tx
+        .send(Msg::Preview(second_id, Ok(Fetched::Image(png))))
+        .unwrap();
+    app.poll();
+    assert!(matches!(app.preview, Some((_, Preview::Image(_)))));
+
+    // exit drops the runtime, which waits for the open until the preview cancels it
+    let third = Pending::new();
+    let cancel = third.cancel.clone();
+    app.preview = loading(third);
+    app.rt.spawn_blocking(move || {
+        let give_up = Instant::now() + Duration::from_secs(5);
+        while !cancel.load(Ordering::Relaxed) && Instant::now() < give_up {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    });
+    let started = Instant::now();
+    drop(app);
+    assert!(started.elapsed() < Duration::from_secs(1));
 }
 
 #[test]

@@ -4,6 +4,7 @@ mod app;
 mod backend;
 mod media;
 mod secret;
+mod stream;
 #[cfg(test)]
 mod tests;
 mod ui;
