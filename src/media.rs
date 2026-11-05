@@ -1,6 +1,6 @@
 use crate::backend::ext;
 use eframe::egui::{self, ColorImage, TextureHandle, TextureOptions};
-use filmcraft_media::{FrameRequest, SharedSource};
+use filmcraft_media::{FrameRequest, SharedSource, cancel};
 use filmcraft_time::Tick;
 use rodio::source::SeekError;
 use rodio::{
@@ -9,17 +9,16 @@ use rodio::{
 use std::io::Cursor;
 use std::num::NonZero;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, sync_channel};
+use std::sync::{Arc, Mutex, PoisonError};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 pub const MAX_PREVIEW: u64 = 100 * 1024 * 1024;
 
-/// Frames above this rate are still decoded (each builds on the previous ones), just not shown.
 const MAX_FPS: f64 = 30.0;
 
-/// Frames are shrunk to at most this width before display: the panel is far narrower, and a
-/// full 4K frame would be 33 MB to upload 30 times a second.
 const MAX_FRAME_WIDTH: u32 = 1280;
 
 #[derive(Clone, Copy, PartialEq)]
@@ -29,7 +28,6 @@ pub enum Kind {
     Video,
 }
 
-/// Only formats the app can decode count as images and audio.
 pub fn kind(key: &str) -> Option<Kind> {
     Some(match ext(key).as_str() {
         "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" => Kind::Image,
@@ -39,7 +37,25 @@ pub fn kind(key: &str) -> Option<Kind> {
     })
 }
 
-/// Parses the file; FilmCraft is new, so a crash on a damaged file becomes an error instead.
+pub fn use_hardware_decoders() {
+    #[cfg(target_os = "macos")]
+    filmcraft_codecs::register_video_decoder(filmcraft_platform::videotoolbox_factory);
+    #[cfg(target_os = "windows")]
+    filmcraft_codecs::register_video_decoder(filmcraft_platform::media_foundation_factory);
+    // driver probing can be slow
+    #[cfg(target_os = "linux")]
+    std::thread::spawn(|| {
+        if filmcraft_platform::vaapi::va::probe().is_ok() {
+            filmcraft_codecs::register_video_decoder(filmcraft_platform::vaapi_factory);
+        }
+        // registered last = tried first
+        #[cfg(target_pointer_width = "64")]
+        if filmcraft_platform::nvdec::cuvid::probe().is_ok() {
+            filmcraft_codecs::register_video_decoder(filmcraft_platform::nvdec_factory);
+        }
+    });
+}
+
 pub fn open_video(key: &str, data: Vec<u8>) -> Result<SharedSource, String> {
     let open = || filmcraft_media::open_bytes(key, data.into(), &filmcraft_codecs::openers());
     match catch_unwind(AssertUnwindSafe(open)) {
@@ -56,7 +72,7 @@ pub trait Playback {
     fn seek(&mut self, to: Duration);
 }
 
-/// Dropping the returned device ends playback, so it must live as long as the player.
+// dropping the sink stops playback
 fn output() -> Result<(MixerDeviceSink, Player), String> {
     let mut sink = DeviceSinkBuilder::open_default_sink().map_err(|e| e.to_string())?;
     sink.log_on_drop(false);
@@ -126,7 +142,7 @@ impl Playback for Audio {
         if self.playing() {
             self.player.pause();
         } else {
-            // a finished track has left the queue, so start it again
+            // rodio drops a finished track from the queue
             if self.player.empty() {
                 let _ = self.load();
             }
@@ -143,8 +159,7 @@ impl Playback for Audio {
     }
 }
 
-/// Wall-clock playback position; video frames and the sound track both follow it.
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Clock {
     base: Duration,
     since: Option<Instant>,
@@ -172,7 +187,12 @@ impl Clock {
     }
 }
 
-/// A video's sound track, decoded a few thousand frames at a time as rodio pulls samples.
+type SharedClock = Arc<Mutex<Clock>>;
+
+fn read(clock: &SharedClock) -> Clock {
+    clock.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
 struct Track {
     source: SharedSource,
     rate: u32,
@@ -212,7 +232,7 @@ impl Iterator for Track {
             if n <= 0 {
                 return None;
             }
-            // this runs on the audio device's thread, where a panic can abort the whole app
+            // a panic on the audio device thread aborts the app
             let source = &self.source;
             let (next, rate) = (self.next, self.rate);
             let decode = AssertUnwindSafe(|| source.audio(next, n as usize, rate));
@@ -222,7 +242,6 @@ impl Iterator for Track {
             self.i = 0;
             for f in 0..chunk.frames() {
                 for c in 0..self.channels as usize {
-                    // a stream with fewer channels than announced repeats its first one
                     let ch = chunk.channels.get(c).or(chunk.channels.first());
                     self.buf.push(ch.map_or(0.0, |ch| ch[f]));
                 }
@@ -268,27 +287,27 @@ struct Sound {
     channels: u16,
 }
 
+static OPEN_VIDEOS: AtomicUsize = AtomicUsize::new(0);
+
 pub struct Video {
     source: SharedSource,
     fps: f64,
     total: Duration,
     sound: Option<Sound>,
-    clock: Clock,
-    frames: Receiver<(Duration, ColorImage)>,
+    clock: SharedClock,
+    frames: Frames,
     next: Option<(Duration, ColorImage)>,
     texture: Option<TextureHandle>,
     ctx: egui::Context,
 }
 
 impl Video {
-    /// Takes a source from [`open_video`], so no file parsing happens on the UI thread.
     pub fn new(source: SharedSource, ctx: &egui::Context) -> Result<Self, String> {
         let info = source.info();
         let v = info.video.as_ref().ok_or("the file has no video track")?;
         let fps = v.frame_rate.num as f64 / v.frame_rate.den.max(1) as f64;
         let fps = if fps > 0.0 { fps.min(MAX_FPS) } else { MAX_FPS };
         let total = Duration::from_secs_f64(info.duration.seconds().max(0.0));
-        // no sound card, or no sound track, just means a silent video
         let sound = info.audio_streams.first().and_then(|a| {
             let channels = u16::try_from(a.channels).ok().filter(|&c| c > 0)?;
             let (sink, player) = output().ok()?;
@@ -307,22 +326,30 @@ impl Video {
                 channels,
             })
         });
+        let clock = SharedClock::default();
+        OPEN_VIDEOS.fetch_add(1, Ordering::Relaxed);
         Ok(Self {
-            frames: decode_frames(source.clone(), Duration::ZERO, fps, total, ctx.clone()),
+            frames: decode_frames(
+                source.clone(),
+                Duration::ZERO,
+                fps,
+                total,
+                clock.clone(),
+                ctx.clone(),
+            ),
             source,
             fps,
             total,
             sound,
-            clock: Clock::default(),
+            clock,
             next: None,
             texture: None,
             ctx: ctx.clone(),
         })
     }
 
-    /// Shows the newest decoded frame that's due; call once per UI frame.
     pub fn update(&mut self) {
-        if self.playing() && self.clock.now() >= self.total {
+        if self.playing() && self.now() >= self.total {
             self.pause();
         }
         let now = self.pos();
@@ -330,7 +357,7 @@ impl Video {
         loop {
             let frame = match self.next.take() {
                 Some(f) => f,
-                None => match self.frames.try_recv() {
+                None => match self.frames.rx.try_recv() {
                     Ok(f) => f,
                     Err(_) => break,
                 },
@@ -362,8 +389,16 @@ impl Video {
         self.texture.as_ref()
     }
 
+    fn now(&self) -> Duration {
+        read(&self.clock).now()
+    }
+
+    fn clock(&self) -> std::sync::MutexGuard<'_, Clock> {
+        self.clock.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     fn pause(&mut self) {
-        self.clock.pause();
+        self.clock().pause();
         if let Some(s) = &self.sound {
             s.player.pause();
         }
@@ -382,11 +417,11 @@ impl Video {
 
 impl Playback for Video {
     fn playing(&self) -> bool {
-        self.clock.since.is_some()
+        read(&self.clock).since.is_some()
     }
 
     fn pos(&self) -> Duration {
-        self.clock.now().min(self.total)
+        self.now().min(self.total)
     }
 
     fn total(&self) -> Option<Duration> {
@@ -402,7 +437,7 @@ impl Playback for Video {
             self.seek(Duration::ZERO);
         }
         self.sync_sound(self.pos());
-        self.clock.play();
+        self.clock().play();
         if let Some(s) = &self.sound {
             s.player.play();
         }
@@ -410,13 +445,14 @@ impl Playback for Video {
 
     fn seek(&mut self, to: Duration) {
         let to = to.min(self.total);
-        self.clock.set(to);
-        // the old decoder thread stops once its receiver is gone
+        self.clock().set(to);
+        // dropping the old Frames cancels its in-flight decode
         self.frames = decode_frames(
             self.source.clone(),
             to,
             self.fps,
             self.total,
+            self.clock.clone(),
             self.ctx.clone(),
         );
         self.next = None;
@@ -424,27 +460,83 @@ impl Playback for Video {
     }
 }
 
+impl Drop for Video {
+    fn drop(&mut self) {
+        let last = OPEN_VIDEOS.fetch_sub(1, Ordering::Relaxed) == 1;
+        let thread = self.frames.stop();
+        if last {
+            std::thread::spawn(move || {
+                if let Some(t) = thread {
+                    let _ = t.join();
+                }
+                if OPEN_VIDEOS.load(Ordering::Relaxed) == 0 {
+                    filmcraft_codecs::release_idle();
+                    filmcraft_frame::pool::trim_planes();
+                }
+            });
+        }
+    }
+}
+
+struct Frames {
+    rx: Receiver<(Duration, ColorImage)>,
+    cancel: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Frames {
+    fn stop(&mut self) -> Option<JoinHandle<()>> {
+        self.cancel.store(true, Ordering::Relaxed);
+        self.thread.take()
+    }
+}
+
+impl Drop for Frames {
+    fn drop(&mut self) {
+        self.stop();
+    }
+}
+
+fn decimation(width: u32) -> usize {
+    width.div_ceil(MAX_FRAME_WIDTH).max(1).next_power_of_two() as usize
+}
+
+fn plan_frame(next: i64, fps: f64, clock: &Clock) -> (i64, Option<Tick>) {
+    if clock.since.is_none() {
+        return (next, None);
+    }
+    let now = clock.now().as_secs_f64();
+    let due = (now * fps).floor() as i64;
+    let i = next.max(due);
+    let ahead = (i as f64 / fps - now).max(0.0);
+    (i, Some(Tick::from_seconds_f64(ahead)))
+}
+
 fn decode_frames(
     source: SharedSource,
     from: Duration,
     fps: f64,
     total: Duration,
+    clock: SharedClock,
     ctx: egui::Context,
-) -> Receiver<(Duration, ColorImage)> {
+) -> Frames {
     let (tx, rx) = sync_channel(4);
-    std::thread::spawn(move || {
-        let first = (from.as_secs_f64() * fps).floor() as i64;
-        for i in first.. {
+    let cancel = Arc::new(AtomicBool::new(false));
+    let flag = cancel.clone();
+    let thread = std::thread::spawn(move || {
+        let mut next = (from.as_secs_f64() * fps).floor() as i64;
+        loop {
+            let (i, late) = plan_frame(next, fps, &read(&clock));
             let t = i as f64 / fps;
-            if t > total.as_secs_f64() {
+            if t > total.as_secs_f64() || flag.load(Ordering::Relaxed) {
                 break;
             }
-            let Ok(frame) = source.video_frame(FrameRequest::full(Tick::from_seconds_f64(t)))
-            else {
+            let request = FrameRequest::full(Tick::from_seconds_f64(t));
+            let decode = || cancel::with_catch_up(late, || source.video_frame(request));
+            let Ok(frame) = cancel::with_cancel(&flag, decode) else {
                 break;
             };
-            let factor = (frame.width / MAX_FRAME_WIDTH + 1).next_power_of_two() as usize;
-            let small = frame.box_decimated(factor);
+            let small = frame.box_decimated(decimation(frame.width));
             let frame = small.as_ref().unwrap_or(&frame);
             let size = [frame.width as usize, frame.height as usize];
             let image = ColorImage::from_rgba_unmultiplied(size, &frame.to_rgba8());
@@ -452,9 +544,14 @@ fn decode_frames(
                 break;
             }
             ctx.request_repaint();
+            next = i + 1;
         }
     });
-    rx
+    Frames {
+        rx,
+        cancel,
+        thread: Some(thread),
+    }
 }
 
 #[cfg(test)]
@@ -473,17 +570,16 @@ mod tests {
 
     #[test]
     fn decodes_audio_and_images() {
-        // one second of 8 kHz mono 16-bit silence
         let mut wav = b"RIFF".to_vec();
         wav.extend((36 + 16000u32).to_le_bytes());
         wav.extend(b"WAVEfmt ");
-        wav.extend(16u32.to_le_bytes()); // fmt chunk size
-        wav.extend(1u16.to_le_bytes()); // PCM
-        wav.extend(1u16.to_le_bytes()); // channels
-        wav.extend(8000u32.to_le_bytes()); // sample rate
-        wav.extend(16000u32.to_le_bytes()); // bytes per second
-        wav.extend(2u16.to_le_bytes()); // bytes per frame
-        wav.extend(16u16.to_le_bytes()); // bits per sample
+        wav.extend(16u32.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(1u16.to_le_bytes());
+        wav.extend(8000u32.to_le_bytes());
+        wav.extend(16000u32.to_le_bytes());
+        wav.extend(2u16.to_le_bytes());
+        wav.extend(16u16.to_le_bytes());
         wav.extend(b"data");
         wav.extend(16000u32.to_le_bytes());
         wav.resize(wav.len() + 16000, 0);
@@ -506,6 +602,120 @@ mod tests {
         let mut truncated = b"\0\0\0\x20ftypisom".to_vec();
         truncated.resize(64, 0xff);
         assert!(open_video("clip.mp4", truncated).is_err());
+    }
+
+    #[test]
+    fn frames_shrink_only_past_the_width_limit() {
+        assert_eq!(decimation(0), 1);
+        assert_eq!(decimation(640), 1);
+        assert_eq!(decimation(1280), 1);
+        assert_eq!(decimation(1281), 2);
+        assert_eq!(decimation(1920), 2);
+        assert_eq!(decimation(2560), 2);
+        assert_eq!(decimation(3840), 4);
+        assert_eq!(decimation(7680), 8);
+    }
+
+    #[test]
+    fn playback_skips_frames_that_are_already_late() {
+        let mut clock = Clock::default();
+        clock.set(Duration::from_secs(10));
+        assert_eq!(plan_frame(3, 30.0, &clock), (3, None));
+        clock.play();
+        let (i, late) = plan_frame(3, 30.0, &clock);
+        assert!((300..=301).contains(&i));
+        assert!(late.unwrap() < Tick::from_seconds_f64(1.0 / 30.0));
+        let (i, late) = plan_frame(330, 30.0, &clock);
+        assert_eq!(i, 330);
+        let ahead = late.unwrap().seconds();
+        assert!(ahead > 0.9 && ahead <= 1.0, "{ahead}");
+    }
+
+    struct Stuck {
+        info: filmcraft_media::MediaInfo,
+        asked: Mutex<Vec<(Tick, Option<Tick>)>>,
+        cancelled: AtomicBool,
+    }
+
+    impl filmcraft_media::MediaSource for Stuck {
+        fn info(&self) -> &filmcraft_media::MediaInfo {
+            &self.info
+        }
+
+        fn video_frame(
+            &self,
+            req: FrameRequest,
+        ) -> filmcraft_media::Result<Arc<filmcraft_frame::VideoFrame>> {
+            self.asked
+                .lock()
+                .unwrap()
+                .push((req.time, cancel::catch_up()));
+            let give_up = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < give_up {
+                if cancel::cancelled() {
+                    self.cancelled.store(true, Ordering::Relaxed);
+                    return Err(filmcraft_media::MediaError::Cancelled);
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            Err(filmcraft_media::MediaError::Decode(
+                "never cancelled".into(),
+            ))
+        }
+
+        fn audio(
+            &self,
+            _start: i64,
+            frames: usize,
+            rate: u32,
+        ) -> filmcraft_media::Result<filmcraft_frame::AudioBuffer> {
+            Ok(filmcraft_frame::AudioBuffer::silence(rate, 2, frames))
+        }
+    }
+
+    #[test]
+    fn seeking_cancels_the_frame_being_decoded() {
+        let stuck = Arc::new(Stuck {
+            info: filmcraft_media::MediaInfo {
+                name: "stuck.mp4".into(),
+                kind: filmcraft_media::MediaKind::Movie,
+                duration: Tick::from_seconds_f64(60.0),
+                video: None,
+                audio_streams: Vec::new(),
+                container: String::new(),
+                start_timecode: None,
+                file_size: None,
+            },
+            asked: Mutex::new(Vec::new()),
+            cancelled: AtomicBool::new(false),
+        });
+        let clock = SharedClock::default();
+        clock.lock().unwrap().set(Duration::from_secs(10));
+        clock.lock().unwrap().play();
+        let source: SharedSource = stuck.clone();
+        let mut frames = decode_frames(
+            source,
+            Duration::ZERO,
+            30.0,
+            Duration::from_secs(60),
+            clock,
+            egui::Context::default(),
+        );
+        let wait = |what: &dyn Fn() -> bool| {
+            let give_up = Instant::now() + Duration::from_secs(2);
+            while !what() && Instant::now() < give_up {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            what()
+        };
+        assert!(wait(&|| !stuck.asked.lock().unwrap().is_empty()));
+        let (t, late) = stuck.asked.lock().unwrap()[0];
+        assert!(t.seconds() >= 10.0, "{}", t.seconds());
+        assert!(late.is_some());
+        let thread = frames.stop();
+        drop(frames);
+        assert!(wait(&|| stuck.cancelled.load(Ordering::Relaxed)));
+        thread.unwrap().join().unwrap();
     }
 
     #[test]

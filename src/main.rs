@@ -10,6 +10,7 @@ mod ui;
 mod update;
 
 fn main() -> eframe::Result {
+    media::use_hardware_decoders();
     let viewport = eframe::egui::ViewportBuilder::default()
         .with_title("Skybin")
         .with_inner_size([1100.0, 700.0])
