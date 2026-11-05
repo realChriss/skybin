@@ -911,7 +911,10 @@ mod tests {
         assert_eq!(ready_bytes(Some(mb), 5, 20_000_000, far), 20_000_000);
         assert_eq!(ready_bytes(Some(mb), 0, target, 1_000_000), 1_000_000);
         assert_eq!(ready_bytes(None, 0, target, far), FALLBACK_START);
-        assert_eq!(ready_bytes(Some(mb), u32::MAX, MAX_AHEAD, far), 64 * 3_750_000);
+        assert_eq!(
+            ready_bytes(Some(mb), u32::MAX, MAX_AHEAD, far),
+            64 * 3_750_000
+        );
     }
 
     #[test]
