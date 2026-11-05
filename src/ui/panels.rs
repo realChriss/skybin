@@ -2,7 +2,8 @@ use super::{RED, count, ghost, human, icons};
 use crate::app::{App, Preview, image_uri};
 use crate::media::Playback;
 use crate::update;
-use eframe::egui::{self, Align, Layout, RichText, vec2};
+use eframe::egui::{self, Align, Color32, FontFamily, Layout, Pos2, RichText, Shape, Stroke, vec2};
+use std::f32::consts::TAU;
 use std::time::Duration;
 
 fn clock(d: Duration) -> String {
@@ -10,16 +11,70 @@ fn clock(d: Duration) -> String {
     format!("{}:{:02}", s / 60, s % 60)
 }
 
+// eases toward the downloaded share, restarting from empty after a refill shrinks it
+fn smoothed(ui: &egui::Ui, id: egui::Id, target: f32) -> f32 {
+    let dt = ui.input(|i| i.stable_dt).min(0.1);
+    let shown = ui.data_mut(|d| {
+        let v = d.get_temp_mut_or(id, 0.0f32);
+        *v = if target < *v {
+            target
+        } else {
+            *v + (target - *v) * (dt * 8.0).min(1.0)
+        };
+        *v
+    });
+    if target - shown > 0.001 {
+        ui.ctx().request_repaint();
+    } else {
+        ui.ctx().request_repaint_after(Duration::from_millis(100));
+    }
+    shown
+}
+
+// a ring that fills clockwise from 12 o'clock
+fn ring(ui: &egui::Ui, rect: egui::Rect, fill: f32, color: Color32) {
+    let center = rect.center();
+    let radius = rect.height().min(rect.width()) * 0.5 - 5.0;
+    let painter = ui.painter();
+    painter.circle_stroke(center, radius, Stroke::new(2.0, color.gamma_multiply(0.2)));
+    let n = 48;
+    let sweep = fill.clamp(0.0, 1.0) * TAU;
+    let points: Vec<Pos2> = (0..=n)
+        .map(|i| {
+            let a = -TAU / 4.0 + sweep * i as f32 / n as f32;
+            center + radius * vec2(a.cos(), a.sin())
+        })
+        .collect();
+    painter.add(Shape::line(points, Stroke::new(2.0, color)));
+}
+
 fn controls(ui: &mut egui::Ui, media: &mut dyn Playback) {
     ui.horizontal(|ui| {
-        if ui
-            .button(if media.playing() {
-                icons::PAUSE
-            } else {
-                icons::PLAY
-            })
-            .clicked()
-        {
+        let icon = RichText::new(if media.playing() {
+            icons::PAUSE
+        } else {
+            icons::PLAY
+        });
+        let buffering = media.buffering();
+        // the hidden icon keeps the button its usual size under the ring
+        let mut button = ui.button(match buffering {
+            Some(_) => icon.color(Color32::TRANSPARENT),
+            None => icon,
+        });
+        if let Some(b) = buffering {
+            let color = match b.trouble {
+                Some(_) => RED,
+                None => ui.visuals().strong_text_color(),
+            };
+            ring(ui, button.rect, smoothed(ui, button.id, b.progress), color);
+            button = button.on_hover_text(match b.trouble {
+                Some(e) => format!("Retrying: {e}"),
+                None => format!("Buffering {:.0}%", b.progress * 100.0),
+            });
+        } else {
+            ui.data_mut(|d| d.remove::<f32>(button.id));
+        }
+        if button.clicked() {
             media.toggle();
         }
         let total = media.total().map_or_else(|| "-:--".to_string(), clock);
@@ -30,26 +85,13 @@ fn controls(ui: &mut egui::Ui, media: &mut dyn Playback) {
         let end = media.total().map_or(t, |d| d.as_secs_f32()).max(0.1);
         // right-to-left: a guessed bar width widens the resizable panel every frame
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            match media.buffering() {
-                Some(b) => {
-                    let text = match &b.trouble {
-                        Some(e) => format!("Retrying: {}", e.chars().take(40).collect::<String>()),
-                        None => format!("Buffering {:.0}%", b.progress * 100.0),
-                    };
-                    let label = ui.label(RichText::new(text).small().weak());
-                    if let Some(e) = b.trouble {
-                        label.on_hover_text(e);
-                    }
-                    ui.spinner();
-                }
-                None => {
-                    ui.label(
-                        RichText::new(format!("{} / {total}", clock(Duration::from_secs_f32(t))))
-                            .monospace()
-                            .small(),
-                    );
-                }
-            }
+            // padded so the slider keeps its width when the minutes gain a digit
+            let now = clock(Duration::from_secs_f32(t));
+            ui.label(
+                RichText::new(format!("{now:>w$} / {total}", w = total.len()))
+                    .small()
+                    .family(FontFamily::Monospace),
+            );
             ui.spacing_mut().slider_width = ui.available_width();
             let slider = ui.add(egui::Slider::new(&mut t, 0.0..=end).show_value(false));
             if slider.is_pointer_button_down_on() {
@@ -271,5 +313,25 @@ mod tests {
         let seeks = &h.state().seeks;
         assert_eq!(seeks.len(), 1);
         assert!((seeks[0].as_secs_f32() - 50.0).abs() < 10.0, "{seeks:?}");
+    }
+
+    #[test]
+    fn the_time_keeps_its_width_while_playing() {
+        let width = |secs| {
+            let mut h = Harness::builder()
+                .with_size([320.0, 60.0])
+                .with_accessibility_check(false)
+                .with_context_setup(|ctx| crate::ui::theme::fonts(ctx, false))
+                .build_ui_state(
+                    |ui, p: &mut Playing| controls(ui, p),
+                    Playing {
+                        pos: Duration::from_secs(secs),
+                        ..Default::default()
+                    },
+                );
+            h.step();
+            h.get_by(|n| n.role() == Role::Label).rect().width()
+        };
+        assert_eq!(width(11), width(88));
     }
 }
