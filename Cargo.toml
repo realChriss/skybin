@@ -39,5 +39,7 @@ egui_kittest = "0.37.0"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
 
 [target.'cfg(not(windows))'.dependencies]
-keyring = "4.2"
 chacha20poly1305 = "0.11"
+
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
+keyring = "4.2"

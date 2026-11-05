@@ -2,7 +2,9 @@ use serde::{Deserialize, Deserializer, Serializer};
 
 #[cfg(windows)]
 const PREFIX: &str = "dpapi:";
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+const PREFIX: &str = "keyfile:";
+#[cfg(not(any(windows, target_os = "macos")))]
 const PREFIX: &str = "keyring:";
 
 pub fn serialize<S: Serializer>(v: &str, s: S) -> Result<S::Ok, S::Error> {
@@ -28,6 +30,10 @@ fn seal(v: &str) -> String {
 }
 
 fn reveal(v: String) -> String {
+    // sealed with the old macOS keychain key, which is no longer read
+    if cfg!(target_os = "macos") && v.starts_with("keyring:") {
+        return String::new();
+    }
     v.strip_prefix(PREFIX)
         .and_then(|hex| {
             (0..hex.len())
@@ -82,17 +88,8 @@ fn crypt(data: &[u8], encrypt: bool) -> Option<Vec<u8>> {
     static CIPHER: OnceLock<Option<XChaCha20Poly1305>> = OnceLock::new();
     let cipher = CIPHER
         .get_or_init(|| {
-            let entry = keyring::Entry::new("skybin", "master-key").ok()?;
-            let key = match entry.get_secret() {
-                Ok(k) => k,
-                Err(keyring::Error::NoEntry) => {
-                    let k = Key::<XChaCha20Poly1305>::generate().to_vec();
-                    entry.set_secret(&k).ok()?;
-                    k
-                }
-                Err(_) => return None,
-            };
-            XChaCha20Poly1305::new_from_slice(&key).ok()
+            let new_key = || Key::<XChaCha20Poly1305>::generate().to_vec();
+            XChaCha20Poly1305::new_from_slice(&master_key(new_key)?).ok()
         })
         .as_ref()?;
 
@@ -110,6 +107,52 @@ fn crypt(data: &[u8], encrypt: bool) -> Option<Vec<u8>> {
     }
 }
 
+// not the keychain: it asks for the password whenever the unsigned binary changes
+#[cfg(target_os = "macos")]
+fn master_key(new_key: impl FnOnce() -> Vec<u8>) -> Option<Vec<u8>> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let dir = eframe::storage_dir("skybin")?;
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join("master.key");
+    if let Ok(k) = std::fs::read(&path) {
+        return (k.len() == 32).then_some(k);
+    }
+    // linked into place so a concurrent start never reads half a key
+    let tmp = dir.join(format!("master.key.{}", std::process::id()));
+    let k = new_key();
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(&k).and_then(|()| f.sync_all()));
+    let linked = written.and_then(|()| std::fs::hard_link(&tmp, &path));
+    let _ = std::fs::remove_file(&tmp);
+    match linked {
+        Ok(()) => Some(k),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            std::fs::read(&path).ok().filter(|k| k.len() == 32)
+        }
+        Err(_) => None,
+    }
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn master_key(new_key: impl FnOnce() -> Vec<u8>) -> Option<Vec<u8>> {
+    let entry = keyring::Entry::new("skybin", "master-key").ok()?;
+    match entry.get_secret() {
+        Ok(k) => Some(k),
+        Err(keyring::Error::NoEntry) => {
+            let k = new_key();
+            entry.set_secret(&k).ok()?;
+            Some(k)
+        }
+        Err(_) => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -122,6 +165,24 @@ mod tests {
         let bad = format!("{PREFIX}00ff");
         assert_eq!(reveal(bad.clone()), bad);
         assert_eq!(seal(&bad), bad);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn old_keychain_values_are_dropped() {
+        assert_eq!(reveal("keyring:00ff".into()), "");
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn key_file_is_private_and_hides_value() {
+        use std::os::unix::fs::PermissionsExt;
+        let s = seal("AKIA");
+        assert!(s.starts_with(PREFIX) && !s.contains("AKIA"));
+        let path = eframe::storage_dir("skybin").unwrap().join("master.key");
+        let meta = std::fs::metadata(path).unwrap();
+        assert_eq!(meta.len(), 32);
+        assert_eq!(meta.permissions().mode() & 0o777, 0o600);
     }
 
     #[cfg(windows)]
