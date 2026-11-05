@@ -7,6 +7,7 @@
 A fast desktop app for managing your S3 buckets.
 
 [![Release](https://img.shields.io/github/v/release/realChriss/skybin)](https://github.com/realChriss/skybin/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/realChriss/skybin/total)](https://github.com/realChriss/skybin/releases)
 [![CI](https://github.com/realChriss/skybin/actions/workflows/ci.yml/badge.svg)](https://github.com/realChriss/skybin/actions/workflows/ci.yml)
 
 </div>
