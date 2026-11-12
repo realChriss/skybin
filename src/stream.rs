@@ -150,7 +150,8 @@ impl S3Reader {
     }
 
     pub fn fill(&self) -> Fill {
-        let st = self.inner.state();
+        let mut st = self.inner.state();
+        self.inner.schedule(&mut st);
         let Some(a) = st.anchor else {
             return Fill {
                 waiting: st.waiting > 0,
@@ -854,6 +855,23 @@ mod tests {
         assert_eq!(fill.buffered, BLOCK);
         assert!(fill.trouble.unwrap().contains("block 1 failed"));
         assert!(r.troubled());
+    }
+
+    #[test]
+    fn a_failed_block_is_retried_while_nothing_reads() {
+        let fake = Fake::new(blocks(10));
+        fake.fail_once.lock().unwrap().insert(3);
+        let r = fake.reader();
+        r.set_ahead(7 * BLOCK);
+        r.read_at(0, &mut [0; 10]).unwrap();
+        assert!(wait(|| fake.asked().len() == 8), "{:?}", fake.asked());
+        std::thread::sleep(RETRY_AFTER);
+        assert!(
+            wait(|| r.fill().buffered == 8 * BLOCK),
+            "{:?}",
+            fake.asked()
+        );
+        assert_eq!(fake.times(3), 2);
     }
 
     #[test]
