@@ -12,7 +12,7 @@ egui_extras = { version = "0.37.0", default-features = false, features = ["image
 filmcraft-codecs = { git = "https://github.com/storytold/filmcraft", tag = "v0.17.1" }
 filmcraft-frame = { git = "https://github.com/storytold/filmcraft", tag = "v0.17.1" }
 filmcraft-media = { git = "https://github.com/storytold/filmcraft", tag = "v0.17.1" }
-filmcraft-platform = { git = "https://github.com/storytold/filmcraft", tag = "v0.17.1" }
+filmcraft-platform = { git = "https://github.com/storytold/filmcraft", tag = "v0.20.0" }
 filmcraft-time = { git = "https://github.com/storytold/filmcraft", tag = "v0.17.1" }
 image = { version = "0.25.10", default-features = false, features = ["bmp", "jpeg", "png"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls"] }
