@@ -9,7 +9,7 @@ eframe = { version = "0.37.0", default-features = false, features = ["clipboard"
 egui = { version = "0.37.0", default-features = false, features = ["monochrome_emoji_fonts"] }
 egui_extras = { version = "0.37.0", default-features = false, features = ["image", "gif", "webp"] }
 # not on crates.io; a version tag lets Dependabot bump it
-filmcraft-codecs = { git = "https://github.com/storytold/filmcraft", tag = "v0.17.1" }
+filmcraft-codecs = { git = "https://github.com/storytold/filmcraft", tag = "v0.20.0" }
 filmcraft-frame = { git = "https://github.com/storytold/filmcraft", tag = "v0.17.1" }
 filmcraft-media = { git = "https://github.com/storytold/filmcraft", tag = "v0.17.1" }
 filmcraft-platform = { git = "https://github.com/storytold/filmcraft", tag = "v0.17.1" }
