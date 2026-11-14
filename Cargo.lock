@@ -1490,7 +1490,7 @@ dependencies = [
  "filmcraft-color",
  "filmcraft-project",
  "filmcraft-text",
- "filmcraft-time",
+ "filmcraft-time 0.17.1",
  "roxmltree",
  "thiserror 2.0.21",
 ]
@@ -1521,7 +1521,7 @@ dependencies = [
  "filmcraft-ogg",
  "filmcraft-opus",
  "filmcraft-prores",
- "filmcraft-time",
+ "filmcraft-time 0.17.1",
  "filmcraft-vp8",
  "filmcraft-vp9",
  "image",
@@ -1581,7 +1581,7 @@ dependencies = [
  "filmcraft-prores",
  "filmcraft-render",
  "filmcraft-text",
- "filmcraft-time",
+ "filmcraft-time 0.17.1",
  "image",
  "rayon",
  "serde",
@@ -1605,7 +1605,7 @@ version = "0.17.1"
 source = "git+https://github.com/storytold/filmcraft?tag=v0.17.1#2fe0d0460da86621fd8b193dcc0a61f790106200"
 dependencies = [
  "filmcraft-color",
- "filmcraft-time",
+ "filmcraft-time 0.17.1",
  "rayon",
  "serde",
 ]
@@ -1672,7 +1672,7 @@ dependencies = [
  "filmcraft-color",
  "filmcraft-dng",
  "filmcraft-frame",
- "filmcraft-time",
+ "filmcraft-time 0.17.1",
  "image",
  "rayon",
  "serde",
@@ -1736,7 +1736,7 @@ dependencies = [
  "filmcraft-h264",
  "filmcraft-hevc",
  "filmcraft-isobmff",
- "filmcraft-time",
+ "filmcraft-time 0.17.1",
  "libloading",
  "log",
  "objc2-core-foundation",
@@ -1754,7 +1754,7 @@ dependencies = [
  "filmcraft-color",
  "filmcraft-geom",
  "filmcraft-media",
- "filmcraft-time",
+ "filmcraft-time 0.17.1",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
@@ -1784,7 +1784,7 @@ dependencies = [
  "filmcraft-media",
  "filmcraft-project",
  "filmcraft-text",
- "filmcraft-time",
+ "filmcraft-time 0.17.1",
  "rayon",
  "serde",
  "serde_json",
@@ -1807,6 +1807,14 @@ dependencies = [
 name = "filmcraft-time"
 version = "0.17.1"
 source = "git+https://github.com/storytold/filmcraft?tag=v0.17.1#2fe0d0460da86621fd8b193dcc0a61f790106200"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "filmcraft-time"
+version = "0.20.0"
+source = "git+https://github.com/storytold/filmcraft?tag=v0.20.0#c5486bcd007ef0b17a6a296b6ad0999af6743640"
 dependencies = [
  "serde",
 ]
@@ -4453,7 +4461,7 @@ dependencies = [
  "filmcraft-frame",
  "filmcraft-media",
  "filmcraft-platform",
- "filmcraft-time",
+ "filmcraft-time 0.20.0",
  "image",
  "keyring",
  "reqwest",
