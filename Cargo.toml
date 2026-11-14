@@ -11,7 +11,7 @@ egui_extras = { version = "0.37.0", default-features = false, features = ["image
 # not on crates.io; a version tag lets Dependabot bump it
 filmcraft-codecs = { git = "https://github.com/storytold/filmcraft", tag = "v0.17.1" }
 filmcraft-frame = { git = "https://github.com/storytold/filmcraft", tag = "v0.17.1" }
-filmcraft-media = { git = "https://github.com/storytold/filmcraft", tag = "v0.17.1" }
+filmcraft-media = { git = "https://github.com/storytold/filmcraft", tag = "v0.20.0" }
 filmcraft-platform = { git = "https://github.com/storytold/filmcraft", tag = "v0.17.1" }
 filmcraft-time = { git = "https://github.com/storytold/filmcraft", tag = "v0.17.1" }
 image = { version = "0.25.10", default-features = false, features = ["bmp", "jpeg", "png"] }
