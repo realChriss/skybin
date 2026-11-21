@@ -16,7 +16,7 @@ filmcraft-platform = { git = "https://github.com/storytold/filmcraft", tag = "v0
 filmcraft-time = { git = "https://github.com/storytold/filmcraft", tag = "v0.20.1" }
 image = { version = "0.25.10", default-features = false, features = ["bmp", "jpeg", "png"] }
 reqwest = { version = "0.12.28", default-features = false, features = ["rustls-tls"] }
-rfd = "0.17.2"
+rfd = "0.18.0"
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "flac", "mp3", "mp4", "vorbis", "wav"] }
 rust-s3 = { version = "0.38.0", default-features = false, features = ["tokio-rustls-tls", "fail-on-err"] }
 serde = { version = "1.0.229", features = ["derive"] }
